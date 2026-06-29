@@ -248,11 +248,11 @@ CREATE TABLE projects (
 - [x] 4.5 ブランチツリーUI（親子関係の可視化）
 
 ### Phase 5: Web SQLエディタ ⌨️
-- [ ] 5.1 WebSocketエンドポイント（Rust → ユーザーPostgresへプロキシ）
-- [ ] 5.2 Monaco Editor統合（SQL構文ハイライト・補完）
-- [ ] 5.3 クエリ実行・結果テーブル表示
-- [ ] 5.4 クエリ履歴・保存済みクエリ
-- [ ] 5.5 実行計画（EXPLAIN）表示
+- [x] 5.1 WebSocketエンドポイント（Rust → ユーザーPostgresへプロキシ）
+- [x] 5.2 Monaco Editor統合（SQL構文ハイライト・補完）
+- [x] 5.3 クエリ実行・結果テーブル表示
+- [x] 5.4 クエリ履歴・保存済みクエリ
+- [x] 5.5 実行計画（EXPLAIN）表示
 
 ### Phase 6: チーム & 権限 👥
 - [ ] 6.1 organizations, teams, members, roles テーブル
@@ -300,7 +300,7 @@ docker compose up -d
 | Phase 2: プロジェクト管理 | ✅ 完了 |
 | Phase 3: プール | ✅ 完了 |
 | Phase 4: ブランチ | ✅ 完了 |
-| Phase 5: SQLエディタ | 未開始 |
+| Phase 5: SQLエディタ | ✅ 完了 |
 | Phase 6: チーム | 未開始 |
 | Phase 7: メトリクス | 未開始 |
 | Phase 8: バックアップ | 未開始 |

@@ -190,10 +190,15 @@ export default function ProjectDetailPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
-        <div className="container mx-auto px-4 py-4">
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/dashboard" className="text-sm text-muted-foreground hover:underline">
             &larr; ダッシュボードに戻る
           </Link>
+          {project.status === "running" && (
+            <Link href={`/projects/${project.id}/editor`}>
+              <Button variant="outline" size="sm">SQL エディタ &rarr;</Button>
+            </Link>
+          )}
         </div>
       </header>
 

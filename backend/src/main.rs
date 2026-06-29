@@ -65,6 +65,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(api::health::health))
         .nest("/api/auth", api::auth::router())
         .nest("/api/projects", api::projects::router())
+        .route(
+            "/api/projects/{id}/query",
+            get(api::query::query_ws_handler),
+        )
         .layer(cors)
         .with_state(state);
 
