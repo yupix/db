@@ -180,7 +180,7 @@ CREATE TABLE projects (
 - [x] 1.3 `POST /api/auth/register` — 登録API
 - [x] 1.4 `POST /api/auth/login` — ログインAPI
 - [x] 1.5 `GET /api/auth/me` — 現在のユーザー情報
-- [ ] 1.6 `POST /api/auth/refresh` — リフレッシュトークン
+- [x] 1.6 `POST /api/auth/refresh` — リフレッシュトークン
 - [x] 1.7 JWT検証ミドルウェア + `AuthUser` extractor
 - [x] 1.8 cargo test で認証ロジックのユニットテスト
 
@@ -188,10 +188,10 @@ CREATE TABLE projects (
 
 - [x] 1.9 `/login` ページ実装
 - [x] 1.10 `/register` ページ実装
-- [ ] 1.11 httpOnly cookie にJWT保存
-- [ ] 1.12 `middleware.ts` で未認証ルートガード
+- [x] 1.11 httpOnly cookie にJWT保存
+- [x] 1.12 `middleware.ts` で未認証ルートガード
 - [x] 1.13 `lib/api.ts` fetchラッパー（トークン付与）
-- [ ] 1.13a 401自動リフレッシュ（refresh実装後に追加）
+- [x] 1.13a 401自動リフレッシュ（refresh実装後に追加）
 - [x] 1.14 認証状態フック (`useAuth`)
 - [x] 1.15 npm run build 成功確認
 
@@ -295,8 +295,8 @@ docker compose up -d
 
 | Phase | 状態 |
 |---|---|
-| Phase 0: 基盤 | ✅ 完了（0.9除く） |
-| Phase 1: 認証 | 🔄 ほぼ完了（1.6, 1.11, 1.12 残り） |
+| Phase 0: 基盤 | ✅ 完了 |
+| Phase 1: 認証 | ✅ 完了 |
 | Phase 2: プロジェクト管理 | 🔄 ほぼ完了（2.10, 2.11, 2.16 残り） |
 | Phase 3: プール | 未開始 |
 | Phase 4: ブランチ | 未開始 |

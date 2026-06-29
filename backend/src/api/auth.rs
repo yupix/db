@@ -1,5 +1,7 @@
 use axum::{
     extract::State,
+    http::header,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -12,11 +14,16 @@ use crate::db::models::User;
 use crate::error::AppError;
 use crate::state::AppState;
 
+const ACCESS_TOKEN_COOKIE: &str = "access_token";
+const REFRESH_TOKEN_COOKIE: &str = "refresh_token";
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/register", post(register))
         .route("/login", post(login))
         .route("/me", get(me))
+        .route("/refresh", post(refresh))
+        .route("/logout", post(logout))
 }
 
 #[derive(Deserialize, Validate)]
@@ -31,7 +38,6 @@ struct RegisterRequest {
 
 #[derive(Serialize)]
 struct AuthResponse {
-    token: String,
     user: UserResponse,
 }
 
@@ -42,10 +48,31 @@ struct UserResponse {
     name: String,
 }
 
+fn build_auth_response(
+    access_token: &str,
+    refresh_token: &str,
+    user: UserResponse,
+) -> Response {
+    let access_cookie = format!(
+        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=900",
+        ACCESS_TOKEN_COOKIE, access_token
+    );
+    let refresh_cookie = format!(
+        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/refresh; Max-Age=604800",
+        REFRESH_TOKEN_COOKIE, refresh_token
+    );
+
+    let mut response = Json(AuthResponse { user }).into_response();
+    let headers = response.headers_mut();
+    headers.append(header::SET_COOKIE, access_cookie.parse().unwrap());
+    headers.append(header::SET_COOKIE, refresh_cookie.parse().unwrap());
+    response
+}
+
 async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
-) -> Result<Json<AuthResponse>, AppError> {
+) -> Result<Response, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -70,16 +97,17 @@ async fn register(
     .fetch_one(&state.db)
     .await?;
 
-    let token = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
 
-    Ok(Json(AuthResponse {
-        token,
-        user: UserResponse {
+    Ok(build_auth_response(
+        &access_token,
+        &refresh_token,
+        UserResponse {
             id: user.id.to_string(),
             email: user.email,
             name: user.name,
         },
-    }))
+    ))
 }
 
 #[derive(Deserialize, Validate)]
@@ -92,7 +120,7 @@ struct LoginRequest {
 async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<AuthResponse>, AppError> {
+) -> Result<Response, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -108,22 +136,59 @@ async fn login(
         return Err(AppError::Unauthorized);
     }
 
-    let token = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
 
-    Ok(Json(AuthResponse {
-        token,
-        user: UserResponse {
+    Ok(build_auth_response(
+        &access_token,
+        &refresh_token,
+        UserResponse {
             id: user.id.to_string(),
             email: user.email,
             name: user.name,
         },
-    }))
+    ))
 }
 
 async fn me(
-    State(state): State<Arc<AppState>>,
-    claims: crate::auth::jwt::Claims,
+    State(_state): State<Arc<AppState>>,
+    claims: jwt::Claims,
 ) -> Result<Json<UserResponse>, AppError> {
+    let user_id: uuid::Uuid = claims.sub.parse()
+        .map_err(|_| AppError::Unauthorized)?;
+
+    let user = sqlx::query_as::<_, User>(
+        "SELECT * FROM users WHERE id = $1"
+    )
+    .bind(user_id)
+    .fetch_optional(&_state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    Ok(Json(UserResponse {
+        id: user.id.to_string(),
+        email: user.email,
+        name: user.name,
+    }))
+}
+
+#[derive(Deserialize)]
+struct RefreshRequest {
+    refresh_token: Option<String>,
+}
+
+async fn refresh(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RefreshRequest>,
+) -> Result<Response, AppError> {
+    let refresh_token = req.refresh_token
+        .ok_or(AppError::BadRequest("Missing refresh_token".into()))?;
+
+    let claims = jwt::verify(&refresh_token, &state.config.jwt_secret)?;
+
+    if claims.token_type != jwt::TokenType::Refresh {
+        return Err(AppError::BadRequest("Invalid token type".into()));
+    }
+
     let user_id: uuid::Uuid = claims.sub.parse()
         .map_err(|_| AppError::Unauthorized)?;
 
@@ -135,9 +200,32 @@ async fn me(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    Ok(Json(UserResponse {
-        id: user.id.to_string(),
-        email: user.email,
-        name: user.name,
-    }))
+    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+
+    Ok(build_auth_response(
+        &access_token,
+        &refresh_token,
+        UserResponse {
+            id: user.id.to_string(),
+            email: user.email,
+            name: user.name,
+        },
+    ))
+}
+
+async fn logout() -> Response {
+    let access_cookie = format!(
+        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        ACCESS_TOKEN_COOKIE
+    );
+    let refresh_cookie = format!(
+        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/refresh; Max-Age=0",
+        REFRESH_TOKEN_COOKIE
+    );
+
+    let mut response = Json(serde_json::json!({ "logged_out": true })).into_response();
+    let headers = response.headers_mut();
+    headers.append(header::SET_COOKIE, access_cookie.parse().unwrap());
+    headers.append(header::SET_COOKIE, refresh_cookie.parse().unwrap());
+    response
 }

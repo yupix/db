@@ -3,7 +3,6 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 interface ApiOptions {
   method?: string;
   body?: unknown;
-  token?: string;
 }
 
 export class ApiError extends Error {
@@ -17,15 +16,11 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  const { method = "GET", body, token } = options;
+  const { method = "GET", body } = options;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
 
   const res = await fetch(`${API_URL}${path}`, {
     method,
@@ -49,7 +44,8 @@ export interface User {
 }
 
 export interface AuthResponse {
-  token: string;
+  access_token: string;
+  refresh_token: string;
   user: User;
 }
 
@@ -72,29 +68,32 @@ export const authApi = {
   login: (data: { email: string; password: string }) =>
     api<AuthResponse>("/api/auth/login", { method: "POST", body: data }),
 
-  me: (token: string) =>
-    api<User>("/api/auth/me", { token }),
+  me: () =>
+    api<User>("/api/auth/me"),
+
+  refresh: (refresh_token: string) =>
+    api<AuthResponse>("/api/auth/refresh", { method: "POST", body: { refresh_token } }),
 };
 
 export const projectsApi = {
-  list: (token: string) =>
-    api<Project[]>("/api/projects", { token }),
+  list: () =>
+    api<Project[]>("/api/projects"),
 
-  get: (id: string, token: string) =>
-    api<Project>(`/api/projects/${id}`, { token }),
+  get: (id: string) =>
+    api<Project>(`/api/projects/${id}`),
 
-  create: (data: { name: string }, token: string) =>
-    api<Project>("/api/projects", { method: "POST", body: data, token }),
+  create: (data: { name: string }) =>
+    api<Project>("/api/projects", { method: "POST", body: data }),
 
-  delete: (id: string, token: string) =>
-    api<{ deleted: boolean }>(`/api/projects/${id}`, { method: "DELETE", token }),
+  delete: (id: string) =>
+    api<{ deleted: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
 
-  start: (id: string, token: string) =>
-    api<Project>(`/api/projects/${id}/start`, { method: "POST", token }),
+  start: (id: string) =>
+    api<Project>(`/api/projects/${id}/start`, { method: "POST" }),
 
-  stop: (id: string, token: string) =>
-    api<Project>(`/api/projects/${id}/stop`, { method: "POST", token }),
+  stop: (id: string) =>
+    api<Project>(`/api/projects/${id}/stop`, { method: "POST" }),
 
-  update: (id: string, data: { name?: string }, token: string) =>
-    api<Project>(`/api/projects/${id}`, { method: "PATCH", body: data, token }),
+  update: (id: string, data: { name?: string }) =>
+    api<Project>(`/api/projects/${id}`, { method: "PATCH", body: data }),
 };

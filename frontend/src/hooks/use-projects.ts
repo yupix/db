@@ -5,21 +5,21 @@ import { projectsApi, type Project } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 
 export function useProjects() {
-  const token = useAuth((s) => s.token);
+  const isAuthenticated = useAuth((s) => s.isAuthenticated);
 
   return useQuery<Project[]>({
     queryKey: ["projects"],
-    queryFn: () => projectsApi.list(token!),
-    enabled: !!token,
+    queryFn: () => projectsApi.list(),
+    enabled: isAuthenticated,
   });
 }
 
 export function useProject(id: string) {
-  const token = useAuth((s) => s.token);
+  const isAuthenticated = useAuth((s) => s.isAuthenticated);
 
   return useQuery<Project>({
     queryKey: ["project", id],
-    queryFn: () => projectsApi.get(id, token!),
-    enabled: !!token && !!id,
+    queryFn: () => projectsApi.get(id),
+    enabled: isAuthenticated && !!id,
   });
 }

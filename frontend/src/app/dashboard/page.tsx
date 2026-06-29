@@ -17,19 +17,17 @@ const statusColors: Record<string, string> = {
 };
 
 export default function DashboardPage() {
-  const { user, token, loadUser, logout } = useAuth();
+  const { user, loadUser, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const router = useRouter();
   const { data: projects, isLoading } = useProjects();
 
   useEffect(() => {
-    if (!token) {
-      router.push("/login");
-      return;
+    if (!isAuthenticated && !authLoading) {
+      loadUser().catch(() => router.push("/login"));
     }
-    if (!user) loadUser();
-  }, [token, user, loadUser, router]);
+  }, [isAuthenticated, authLoading, loadUser, router]);
 
-  if (!user) return null;
+  if (authLoading || !isAuthenticated) return null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -37,7 +35,7 @@ export default function DashboardPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold">DB Console</h1>
           <div className="flex items-center gap-4">
-            <span className="text-sm text-muted-foreground">{user.email}</span>
+            <span className="text-sm text-muted-foreground">{user?.email}</span>
             <Button variant="outline" onClick={logout}>
               ログアウト
             </Button>

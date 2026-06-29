@@ -14,26 +14,22 @@ export default function NewProjectPage() {
   const [name, setName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { token, loadUser, user } = useAuth();
+  const { isAuthenticated, loadUser, isLoading: authLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!token) {
-      router.push("/login");
-      return;
+    if (!isAuthenticated && !authLoading) {
+      loadUser().catch(() => router.push("/login"));
     }
-    if (!user) loadUser();
-  }, [token, user, loadUser, router]);
+  }, [isAuthenticated, authLoading, loadUser, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token) return;
-
     setIsLoading(true);
     setError(null);
 
     try {
-      const project = await projectsApi.create({ name }, token);
+      const project = await projectsApi.create({ name });
       router.push(`/projects/${project.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "作成に失敗しました");
@@ -41,6 +37,8 @@ export default function NewProjectPage() {
       setIsLoading(false);
     }
   };
+
+  if (authLoading || !isAuthenticated) return null;
 
   return (
     <div className="min-h-screen bg-background">

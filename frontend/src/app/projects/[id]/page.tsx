@@ -20,32 +20,29 @@ const statusColors: Record<string, string> = {
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { token, loadUser, user } = useAuth();
+  const { isAuthenticated, loadUser, isLoading: authLoading } = useAuth();
   const router = useRouter();
   const { data: project, isLoading, refetch } = useProject(id);
   const [actionLoading, setActionLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!token) {
-      router.push("/login");
-      return;
+    if (!isAuthenticated && !authLoading) {
+      loadUser().catch(() => router.push("/login"));
     }
-    if (!user) loadUser();
-  }, [token, user, loadUser, router]);
+  }, [isAuthenticated, authLoading, loadUser, router]);
 
   const handleAction = async (action: "start" | "stop" | "delete") => {
-    if (!token) return;
     setActionLoading(true);
     try {
       if (action === "delete") {
         if (!confirm("本当に削除しますか？")) return;
-        await projectsApi.delete(id, token);
+        await projectsApi.delete(id);
         router.push("/dashboard");
         return;
       }
-      if (action === "start") await projectsApi.start(id, token);
-      if (action === "stop") await projectsApi.stop(id, token);
+      if (action === "start") await projectsApi.start(id);
+      if (action === "stop") await projectsApi.stop(id);
       refetch();
     } catch (e) {
       alert(e instanceof Error ? e.message : "操作に失敗しました");
@@ -62,6 +59,7 @@ export default function ProjectDetailPage() {
     }
   };
 
+  if (authLoading || !isAuthenticated) return null;
   if (isLoading) return <div className="p-8">読み込み中...</div>;
   if (!project) return <div className="p-8">プロジェクトが見つかりません</div>;
 

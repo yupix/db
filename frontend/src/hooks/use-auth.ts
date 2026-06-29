@@ -1,32 +1,31 @@
 "use client";
 
 import { create } from "zustand";
-import { authApi, type User } from "@/lib/api";
+import { authApi, type User, type ApiError } from "@/lib/api";
 
 interface AuthState {
   user: User | null;
-  token: string | null;
   isLoading: boolean;
+  isAuthenticated: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   loadUser: () => Promise<void>;
-  setToken: (token: string) => void;
+  refreshAndRetry: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 export const useAuth = create<AuthState>((set, get) => ({
   user: null,
-  token: typeof window !== "undefined" ? localStorage.getItem("token") : null,
   isLoading: false,
+  isAuthenticated: false,
   error: null,
 
   login: async (email, password) => {
     set({ isLoading: true, error: null });
     try {
       const res = await authApi.login({ email, password });
-      localStorage.setItem("token", res.token);
-      set({ user: res.user, token: res.token, isLoading: false });
+      set({ user: res.user, isAuthenticated: true, isLoading: false });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : "Login failed", isLoading: false });
       throw e;
@@ -37,34 +36,47 @@ export const useAuth = create<AuthState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await authApi.register({ email, password, name });
-      localStorage.setItem("token", res.token);
-      set({ user: res.user, token: res.token, isLoading: false });
+      set({ user: res.user, isAuthenticated: true, isLoading: false });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : "Registration failed", isLoading: false });
       throw e;
     }
   },
 
-  logout: () => {
-    localStorage.removeItem("token");
-    set({ user: null, token: null });
+  logout: async () => {
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {}
+    set({ user: null, isAuthenticated: false });
   },
 
   loadUser: async () => {
-    const token = get().token;
-    if (!token) return;
     set({ isLoading: true });
     try {
-      const user = await authApi.me(token);
-      set({ user, isLoading: false });
+      const user = await authApi.me();
+      set({ user, isAuthenticated: true, isLoading: false });
     } catch {
-      localStorage.removeItem("token");
-      set({ user: null, token: null, isLoading: false });
+      set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },
 
-  setToken: (token) => {
-    localStorage.setItem("token", token);
-    set({ token });
+  refreshAndRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof Error && (e as ApiError).status === 401) {
+        try {
+          await authApi.refresh(get().user?.id || "");
+          return await fn();
+        } catch {
+          set({ user: null, isAuthenticated: false });
+          throw e;
+        }
+      }
+      throw e;
+    }
   },
 }));
