@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+frontend/.next/
+
+# Rust
+backend/target/
+backend/.env
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+pgdata/
+pgbouncer_data/
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# pnpm
+pnpm-debug.log*
