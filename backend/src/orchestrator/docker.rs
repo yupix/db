@@ -170,10 +170,23 @@ pub async fn create_pgbouncer_container(
         host_config.network_mode = Some(net_id.clone());
     }
 
+    let healthcheck = HealthConfig {
+        test: Some(vec![
+            "CMD-SHELL".to_string(),
+            "pg_isready -h 127.0.0.1 -p 6432".to_string(),
+        ]),
+        interval: Some(5_000_000_000),
+        timeout: Some(5_000_000_000),
+        retries: Some(10),
+        start_period: Some(5_000_000_000),
+        ..Default::default()
+    };
+
     let container_config = ContainerConfig {
         image: Some("bitnami/pgbouncer:1.23"),
         env: Some(env),
         host_config: Some(host_config),
+        healthcheck: Some(healthcheck),
         ..Default::default()
     };
 
@@ -188,13 +201,14 @@ pub async fn create_pgbouncer_container(
         .await?;
 
     tracing::info!(
-        "Created and started PgBouncer container: {} ({})",
+        "Created and started PgBouncer container: {} ({}), waiting for healthy...",
         config.container_name,
         result.id
     );
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_for_healthy(docker, &result.id).await?;
 
+    tracing::info!("PgBouncer container {} is healthy", config.container_name);
     Ok(result.id)
 }
 

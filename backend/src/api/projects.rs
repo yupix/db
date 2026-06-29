@@ -188,12 +188,27 @@ async fn create_project(
             .collect::<String>()
     );
 
-    let port = find_available_port(&state).await?;
-    let pgbouncer_port = find_available_port(&state).await?;
+    let port = find_available_port(&state, &[]).await?;
+    let pgbouncer_port = find_available_port(&state, &[port]).await?;
 
     let pool_mode = req.pool_mode.unwrap_or_else(|| "transaction".to_string());
+    if !matches!(pool_mode.as_str(), "session" | "transaction" | "statement") {
+        return Err(AppError::BadRequest(
+            "pool_mode must be one of: session, transaction, statement".into(),
+        ));
+    }
     let max_client_conn = req.max_client_conn.unwrap_or(100);
+    if !(1..=10000).contains(&max_client_conn) {
+        return Err(AppError::BadRequest(
+            "max_client_conn must be between 1 and 10000".into(),
+        ));
+    }
     let default_pool_size = req.default_pool_size.unwrap_or(20);
+    if !(1..=1000).contains(&default_pool_size) {
+        return Err(AppError::BadRequest(
+            "default_pool_size must be between 1 and 1000".into(),
+        ));
+    }
 
     let project = sqlx::query_as::<_, Project>(
         "INSERT INTO projects (user_id, name, slug, container_name, db_name, db_user, db_password, port, status, pgbouncer_port, pool_mode, max_client_conn, default_pool_size)
@@ -317,8 +332,20 @@ async fn create_project(
             }
             Err(e) => {
                 tracing::error!("Failed to create PgBouncer container: {}", e);
+                // Cleanup: remove PG container and network
+                if let Ok(pg_cid) = sqlx::query_scalar::<_, String>(
+                    "SELECT container_id FROM projects WHERE id = $1",
+                )
+                .bind(project_id)
+                .fetch_one(&state_clone.db)
+                .await
+                    && !pg_cid.is_empty()
+                {
+                    let _ = docker::remove_container(&state_clone.docker, &pg_cid).await;
+                }
+                let _ = docker::remove_docker_network(&state_clone.docker, &network_id).await;
                 let _ = sqlx::query(
-                    "UPDATE projects SET status = 'error', updated_at = now() WHERE id = $1",
+                    "UPDATE projects SET status = 'error', container_id = NULL, docker_network_id = NULL, updated_at = now() WHERE id = $1",
                 )
                 .bind(project_id)
                 .execute(&state_clone.db)
@@ -590,6 +617,69 @@ async fn update_pool_settings(
         .fetch_one(&state.db)
         .await?;
 
+    // Recreate PgBouncer container if project is running
+    if updated.status == "running"
+        && let Some(old_pgb_id) = &updated.pgbouncer_container_id
+    {
+        let state_clone = state.clone();
+        let old_pgb_id = old_pgb_id.clone();
+        let pgbouncer_port = updated.pgbouncer_port.unwrap_or(0) as u16;
+        let container_name = updated.container_name.clone();
+        let db_name = updated.db_name.clone();
+        let db_user = updated.db_user.clone();
+        let db_password = updated.db_password.clone();
+        let pool_mode = updated.pool_mode.clone();
+        let max_client_conn = updated.max_client_conn;
+        let default_pool_size = updated.default_pool_size;
+        let network_id = updated.docker_network_id.clone();
+        let project_id = updated.id;
+
+        tokio::spawn(async move {
+            tracing::info!("Recreating PgBouncer for project {}", project_id);
+            let _ = docker::remove_container(&state_clone.docker, &old_pgb_id).await;
+
+            let pgbouncer_name = format!(
+                "pgbouncer-{}",
+                Uuid::new_v4()
+                    .to_string()
+                    .replace('-', "")
+                    .chars()
+                    .take(12)
+                    .collect::<String>()
+            );
+
+            let pgbouncer_config = docker::PgBouncerConfig {
+                container_name: pgbouncer_name,
+                port: pgbouncer_port,
+                backend_host: container_name,
+                backend_port: 5432,
+                backend_db: db_name,
+                backend_user: db_user,
+                backend_password: db_password,
+                pool_mode,
+                max_client_conn,
+                default_pool_size,
+                network_id,
+            };
+
+            match docker::create_pgbouncer_container(&state_clone.docker, &pgbouncer_config).await {
+                Ok(new_id) => {
+                    let _ = sqlx::query(
+                        "UPDATE projects SET pgbouncer_container_id = $1, updated_at = now() WHERE id = $2",
+                    )
+                    .bind(&new_id)
+                    .bind(project_id)
+                    .execute(&state_clone.db)
+                    .await;
+                    tracing::info!("PgBouncer recreated for project {}", project_id);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to recreate PgBouncer: {}", e);
+                }
+            }
+        });
+    }
+
     Ok(Json(PoolSettingsResponse {
         pool_mode: updated.pool_mode,
         max_client_conn: updated.max_client_conn,
@@ -622,7 +712,7 @@ fn generate_password() -> String {
         .collect()
 }
 
-async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
+async fn find_available_port(state: &AppState, exclude: &[i32]) -> Result<i32, AppError> {
     let used_ports: Vec<i32> =
         sqlx::query_scalar("SELECT port FROM projects WHERE status != 'deleted'")
             .fetch_all(&state.db)
@@ -638,7 +728,7 @@ async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
         if port > 25432 {
             return Err(AppError::Internal("No available ports".into()));
         }
-        if used_ports.contains(&port) || pgb_ports.contains(&port) {
+        if used_ports.contains(&port) || pgb_ports.contains(&port) || exclude.contains(&port) {
             port += 1;
             continue;
         }
