@@ -152,7 +152,14 @@ export default function ProjectDetailPage() {
     if (!id || !confirm("このブランチを削除しますか？")) return;
     try {
       await projectsApi.deleteBranch(id, branchId);
-      setBranches(branches.filter((b) => b.id !== branchId));
+      // DB側は ON DELETE SET NULL で子をルートに昇格させるので stateも追従
+      setBranches((prev) =>
+        prev
+          .filter((b) => b.id !== branchId)
+          .map((b) =>
+            b.parent_branch_id === branchId ? { ...b, parent_branch_id: null } : b
+          )
+      );
     } catch (e) {
       alert(e instanceof Error ? e.message : "ブランチの削除に失敗しました");
     }
@@ -542,8 +549,11 @@ function BranchTree({
   onReset,
   onDelete,
 }: BranchTreeProps) {
-  // Build tree: root branches (parent_branch_id == null) and their children
-  const rootBranches = branches.filter((b) => !b.parent_branch_id);
+  // Build tree: root branches (parent_branch_id == null or parent not in list) and their children
+  const branchIds = new Set(branches.map((b) => b.id));
+  const rootBranches = branches.filter(
+    (b) => !b.parent_branch_id || !branchIds.has(b.parent_branch_id)
+  );
   const childrenOf = (parentId: string) =>
     branches.filter((b) => b.parent_branch_id === parentId);
 
@@ -564,7 +574,7 @@ function BranchTree({
             </Badge>
             <span className="font-medium truncate">{branch.name}</span>
             {depth === 0 && (
-              <Badge variant="secondary" className="text-xs">main</Badge>
+              <Badge variant="secondary" className="text-xs">top-level</Badge>
             )}
           </div>
           <div className="flex gap-1 shrink-0">
