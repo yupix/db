@@ -131,7 +131,7 @@ db/
 - [x] 0.2 Next.js 14 初期化（App Router, TypeScript, Tailwind）
 - [x] 0.3 shadcn/ui セットアップ
 - [x] 0.4 Rust プロジェクト初期化（axum, sqlx, tokio, bollard, jsonwebtoken, argon2）
-- [x] 0.5 Docker Compose 作成（Control DB + Postgres + PgBouncer）
+- [x] 0.5 Docker Compose 作成（Control DB + Postgresテンプレ + PgBouncer Dockerfile）
 - [x] 0.6 Control DB マイグレーション（001_users, 002_projects）
 - [x] 0.7 CI設定（cargo fmt/clippy/test + pnpm lint/typecheck/build）
 - [x] 0.8 .gitignore, README 作成
@@ -176,7 +176,7 @@ CREATE TABLE projects (
 ### Rust 側
 
 - [x] 1.1 パスワードハッシュ（Argon2id）実装 (`auth/password.rs`)
-- [x] 1.2 JWT発行・検証（access + refresh）実装 (`auth/jwt.rs`)
+- [x] 1.2 JWT発行・検証（access token）実装 (`auth/jwt.rs`)
 - [x] 1.3 `POST /api/auth/register` — 登録API
 - [x] 1.4 `POST /api/auth/login` — ログインAPI
 - [x] 1.5 `GET /api/auth/me` — 現在のユーザー情報
@@ -190,7 +190,8 @@ CREATE TABLE projects (
 - [x] 1.10 `/register` ページ実装
 - [ ] 1.11 httpOnly cookie にJWT保存
 - [ ] 1.12 `middleware.ts` で未認証ルートガード
-- [x] 1.13 `lib/api.ts` fetchラッパー（cookie付与・401リフレッシュ）
+- [x] 1.13 `lib/api.ts` fetchラッパー（トークン付与）
+- [ ] 1.13a 401自動リフレッシュ（refresh実装後に追加）
 - [x] 1.14 認証状態フック (`useAuth`)
 - [x] 1.15 npm run build 成功確認
 

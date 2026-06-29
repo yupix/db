@@ -25,3 +25,26 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, AppError> {
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_and_verify() {
+        let password = "my-secret-password";
+        let hashed = hash(password).unwrap();
+        assert!(verify(password, &hashed).unwrap());
+    }
+
+    #[test]
+    fn test_verify_wrong_password() {
+        let hashed = hash("correct-password").unwrap();
+        assert!(!verify("wrong-password", &hashed).unwrap());
+    }
+
+    #[test]
+    fn test_verify_invalid_hash() {
+        assert!(verify("password", "not-a-valid-hash").is_err());
+    }
+}

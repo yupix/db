@@ -331,10 +331,20 @@ async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
         .await?;
 
     let mut port = 15432;
-    while used_ports.contains(&port) {
-        port += 1;
+    loop {
         if port > 25432 {
             return Err(AppError::Internal("No available ports".into()));
+        }
+        if used_ports.contains(&port) {
+            port += 1;
+            continue;
+        }
+        match tokio::net::TcpListener::bind(("0.0.0.0", port as u16)).await {
+            Ok(_) => break,
+            Err(_) => {
+                port += 1;
+                continue;
+            }
         }
     }
     Ok(port)
