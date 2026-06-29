@@ -11,11 +11,11 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<void>;
   logout: () => Promise<void>;
-  loadUser: () => Promise<void>;
-  refreshAndRetry: <T>(fn: () => Promise<T>) => Promise<T>;
+  loadUser: () => Promise<boolean>;
+  refresh: () => Promise<boolean>;
 }
 
-export const useAuth = create<AuthState>((set, get) => ({
+export const useAuth = create<AuthState>((set) => ({
   user: null,
   isLoading: false,
   isAuthenticated: false,
@@ -58,25 +58,35 @@ export const useAuth = create<AuthState>((set, get) => ({
     try {
       const user = await authApi.me();
       set({ user, isAuthenticated: true, isLoading: false });
+      return true;
     } catch {
       set({ user: null, isAuthenticated: false, isLoading: false });
+      return false;
     }
   },
 
-  refreshAndRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+  refresh: async () => {
     try {
-      return await fn();
-    } catch (e) {
-      if (e instanceof Error && (e as ApiError).status === 401) {
-        try {
-          await authApi.refresh(get().user?.id || "");
-          return await fn();
-        } catch {
-          set({ user: null, isAuthenticated: false });
-          throw e;
-        }
-      }
-      throw e;
+      const res = await authApi.refresh();
+      set({ user: res.user, isAuthenticated: true });
+      return true;
+    } catch {
+      set({ user: null, isAuthenticated: false });
+      return false;
     }
   },
 }));
+
+export async function apiWithRefresh<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof Error && (e as ApiError).status === 401) {
+      const refreshed = await useAuth.getState().refresh();
+      if (refreshed) {
+        return await fn();
+      }
+    }
+    throw e;
+  }
+}

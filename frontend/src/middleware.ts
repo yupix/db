@@ -6,16 +6,19 @@ const authRoutes = ["/login", "/register"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const accessToken = request.cookies.get("access_token")?.value;
 
   const isProtected = protectedRoutes.some((route) => pathname.startsWith(route));
   const isAuth = authRoutes.some((route) => pathname.startsWith(route));
 
-  if (isProtected) {
-    return NextResponse.next();
+  if (isProtected && !accessToken) {
+    const loginUrl = new URL("/login", request.url);
+    return NextResponse.redirect(loginUrl);
   }
 
-  if (isAuth) {
-    return NextResponse.next();
+  if (isAuth && accessToken) {
+    const dashboardUrl = new URL("/dashboard", request.url);
+    return NextResponse.redirect(dashboardUrl);
   }
 
   return NextResponse.next();

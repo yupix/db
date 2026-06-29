@@ -29,6 +29,8 @@ services:
       RUST_LOG: info,backend=debug
       HOST: 0.0.0.0
       PORT: 8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       control-db:
         condition: service_healthy

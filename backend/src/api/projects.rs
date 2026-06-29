@@ -1,7 +1,7 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -17,7 +17,12 @@ use crate::state::AppState;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_projects).post(create_project))
-        .route("/{id}", get(get_project).delete(delete_project).patch(update_project))
+        .route(
+            "/{id}",
+            get(get_project)
+                .delete(delete_project)
+                .patch(update_project),
+        )
         .route("/{id}/start", post(start_project))
         .route("/{id}/stop", post(stop_project))
 }
@@ -67,7 +72,12 @@ async fn list_projects(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(projects.iter().map(|p| ProjectResponse::from(p, "localhost")).collect()))
+    Ok(Json(
+        projects
+            .iter()
+            .map(|p| ProjectResponse::from(p, "localhost"))
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize, Validate)]
@@ -81,15 +91,44 @@ async fn create_project(
     claims: Claims,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, AppError> {
-    req.validate().map_err(|e| AppError::BadRequest(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let slug = slugify(&req.name);
+
+    let existing_slug = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM projects WHERE slug = $1 AND status != 'deleted'",
+    )
+    .bind(&slug)
+    .fetch_one(&state.db)
+    .await?;
+
+    if existing_slug > 0 {
+        return Err(AppError::Conflict("Project name already exists".into()));
+    }
+
     let db_name = format!("db_{}", &slug.replace('-', "_"));
-    let db_user = format!("user_{}", Uuid::new_v4().to_string().replace('-', "").chars().take(8).collect::<String>());
+    let db_user = format!(
+        "user_{}",
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(8)
+            .collect::<String>()
+    );
     let db_password = generate_password();
-    let container_name = format!("userpg-{}", Uuid::new_v4().to_string().replace('-', "").chars().take(12).collect::<String>());
+    let container_name = format!(
+        "userpg-{}",
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
 
     let port = find_available_port(&state).await?;
 
@@ -144,13 +183,11 @@ async fn create_project(
             }
         };
 
-        let _ = sqlx::query(
-            "UPDATE projects SET status = $1, updated_at = now() WHERE id = $2"
-        )
-        .bind(new_status)
-        .bind(project_id)
-        .execute(&state_clone.db)
-        .await;
+        let _ = sqlx::query("UPDATE projects SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(new_status)
+            .bind(project_id)
+            .execute(&state_clone.db)
+            .await;
     });
 
     Ok(Json(ProjectResponse::from(&project, "localhost")))
@@ -163,14 +200,13 @@ async fn get_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     Ok(Json(ProjectResponse::from(&project, "localhost")))
 }
@@ -182,14 +218,13 @@ async fn delete_project(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     if let Some(cid) = &project.container_id {
         let _ = docker::remove_container(&state.docker, cid).await;
@@ -210,14 +245,13 @@ async fn start_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     if let Some(cid) = &project.container_id {
         docker::start_container(&state.docker, cid).await?;
@@ -242,14 +276,13 @@ async fn stop_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     if let Some(cid) = &project.container_id {
         docker::stop_container(&state.docker, cid).await?;
@@ -280,14 +313,13 @@ async fn update_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let _project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     if let Some(name) = &req.name {
         sqlx::query("UPDATE projects SET name = $1, updated_at = now() WHERE id = $2")
@@ -326,9 +358,10 @@ fn generate_password() -> String {
 }
 
 async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
-    let used_ports: Vec<i32> = sqlx::query_scalar("SELECT port FROM projects WHERE status != 'deleted'")
-        .fetch_all(&state.db)
-        .await?;
+    let used_ports: Vec<i32> =
+        sqlx::query_scalar("SELECT port FROM projects WHERE status != 'deleted'")
+            .fetch_all(&state.db)
+            .await?;
 
     let mut port = 15432;
     loop {

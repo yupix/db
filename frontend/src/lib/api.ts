@@ -44,8 +44,6 @@ export interface User {
 }
 
 export interface AuthResponse {
-  access_token: string;
-  refresh_token: string;
   user: User;
 }
 
@@ -71,8 +69,8 @@ export const authApi = {
   me: () =>
     api<User>("/api/auth/me"),
 
-  refresh: (refresh_token: string) =>
-    api<AuthResponse>("/api/auth/refresh", { method: "POST", body: { refresh_token } }),
+  refresh: () =>
+    api<AuthResponse>("/api/auth/refresh", { method: "POST", body: {} }),
 };
 
 export const projectsApi = {

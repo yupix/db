@@ -1,8 +1,8 @@
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
@@ -19,8 +19,10 @@ use state::AppState;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info,backend=debug".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,backend=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -44,11 +46,26 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     });
 
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::mirror_request())
+        .allow_credentials(true)
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ]);
+
     let app = Router::new()
         .route("/api/health", get(api::health::health))
         .nest("/api/auth", api::auth::router())
         .nest("/api/projects", api::projects::router())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .with_state(state);
 
     let addr = format!("{}:{}", config.host, config.port);

@@ -133,7 +133,7 @@ db/
 - [x] 0.4 Rust プロジェクト初期化（axum, sqlx, tokio, bollard, jsonwebtoken, argon2）
 - [x] 0.5 Docker Compose 作成（Control DB + Postgresテンプレ + PgBouncer Dockerfile）
 - [x] 0.6 Control DB マイグレーション（001_users, 002_projects）
-- [x] 0.7 CI設定（cargo fmt/clippy/test + pnpm lint/typecheck/build）
+- [x] 0.7 CI設定（cargo fmt/clippy/test + pnpm lint/typecheck/build） ✅ CI通過確認
 - [x] 0.8 .gitignore, README 作成
 - [ ] 0.9 動作確認: docker compose up → backend起動 → frontend起動
 

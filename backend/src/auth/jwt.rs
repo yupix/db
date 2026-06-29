@@ -38,8 +38,7 @@ impl FromRequestParts<Arc<AppState>> for Claims {
         parts: &mut Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
-        let token = extract_token_from_header(parts)
-            .or_else(|| extract_token_from_cookie(parts));
+        let token = extract_token_from_header(parts).or_else(|| extract_token_from_cookie(parts));
 
         let token = token.ok_or(AppError::Unauthorized)?;
         let claims = verify(&token, &state.config.jwt_secret)?;

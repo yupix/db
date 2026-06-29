@@ -1,9 +1,9 @@
+use bollard::Docker;
 use bollard::container::{
     Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions,
     StartContainerOptions, StopContainerOptions,
 };
 use bollard::models::{HostConfig, PortBinding};
-use bollard::Docker;
 use std::collections::HashMap;
 
 use crate::error::AppError;
@@ -52,7 +52,11 @@ pub async fn create_postgres_container(
         .start_container(&result.id, None::<StartContainerOptions<String>>)
         .await?;
 
-    tracing::info!("Created and started container: {} ({})", container_name, result.id);
+    tracing::info!(
+        "Created and started container: {} ({})",
+        container_name,
+        result.id
+    );
     Ok(result.id)
 }
 

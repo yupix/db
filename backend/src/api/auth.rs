@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::State,
     http::header,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -48,11 +48,7 @@ struct UserResponse {
     name: String,
 }
 
-fn build_auth_response(
-    access_token: &str,
-    refresh_token: &str,
-    user: UserResponse,
-) -> Response {
+fn build_auth_response(access_token: &str, refresh_token: &str, user: UserResponse) -> Response {
     let access_cookie = format!(
         "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=900",
         ACCESS_TOKEN_COOKIE, access_token
@@ -76,12 +72,10 @@ async fn register(
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let existing = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM users WHERE email = $1"
-    )
-    .bind(&req.email)
-    .fetch_one(&state.db)
-    .await?;
+    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = $1")
+        .bind(&req.email)
+        .fetch_one(&state.db)
+        .await?;
 
     if existing > 0 {
         return Err(AppError::Conflict("Email already registered".into()));
@@ -89,7 +83,7 @@ async fn register(
 
     let hashed = password::hash(&req.password)?;
     let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *"
+        "INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *",
     )
     .bind(&req.email)
     .bind(&hashed)
@@ -97,7 +91,8 @@ async fn register(
     .fetch_one(&state.db)
     .await?;
 
-    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+    let (access_token, refresh_token) =
+        jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
 
     Ok(build_auth_response(
         &access_token,
@@ -124,19 +119,18 @@ async fn login(
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let user = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE email = $1"
-    )
-    .bind(&req.email)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::Unauthorized)?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+        .bind(&req.email)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
 
     if !password::verify(&req.password, &user.password)? {
         return Err(AppError::Unauthorized);
     }
 
-    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+    let (access_token, refresh_token) =
+        jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
 
     Ok(build_auth_response(
         &access_token,
@@ -153,16 +147,13 @@ async fn me(
     State(_state): State<Arc<AppState>>,
     claims: jwt::Claims,
 ) -> Result<Json<UserResponse>, AppError> {
-    let user_id: uuid::Uuid = claims.sub.parse()
-        .map_err(|_| AppError::Unauthorized)?;
+    let user_id: uuid::Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let user = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE id = $1"
-    )
-    .bind(user_id)
-    .fetch_optional(&_state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&_state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     Ok(Json(UserResponse {
         id: user.id.to_string(),
@@ -171,17 +162,12 @@ async fn me(
     }))
 }
 
-#[derive(Deserialize)]
-struct RefreshRequest {
-    refresh_token: Option<String>,
-}
-
 async fn refresh(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<RefreshRequest>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, AppError> {
-    let refresh_token = req.refresh_token
-        .ok_or(AppError::BadRequest("Missing refresh_token".into()))?;
+    let refresh_token = extract_cookie(&headers, REFRESH_TOKEN_COOKIE)
+        .ok_or(AppError::BadRequest("Missing refresh_token cookie".into()))?;
 
     let claims = jwt::verify(&refresh_token, &state.config.jwt_secret)?;
 
@@ -189,18 +175,16 @@ async fn refresh(
         return Err(AppError::BadRequest("Invalid token type".into()));
     }
 
-    let user_id: uuid::Uuid = claims.sub.parse()
-        .map_err(|_| AppError::Unauthorized)?;
+    let user_id: uuid::Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let user = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE id = $1"
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
-    let (access_token, refresh_token) = jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
+    let (access_token, refresh_token) =
+        jwt::generate(&user.id.to_string(), &state.config.jwt_secret)?;
 
     Ok(build_auth_response(
         &access_token,
@@ -211,6 +195,18 @@ async fn refresh(
             name: user.name,
         },
     ))
+}
+
+fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                let c = c.trim();
+                c.strip_prefix(&format!("{}=", name)).map(|s| s.to_string())
+            })
+        })
 }
 
 async fn logout() -> Response {
