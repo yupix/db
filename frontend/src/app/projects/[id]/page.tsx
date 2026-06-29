@@ -432,57 +432,19 @@ export default function ProjectDetailPage() {
             <CardHeader>
               <CardTitle>ブランチ</CardTitle>
               <CardDescription>
-                データベースのコピー（ブランチ）を作成・管理
+                データベースのコピー（ブランチ）を作成・管理。ツリー構造で親子関係を表示。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {branches.length > 0 && (
-                <div className="space-y-2">
-                  {branches.map((branch) => (
-                    <div
-                      key={branch.id}
-                      className="flex items-center justify-between p-2 border rounded"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Badge className={statusColors[branch.status] || "bg-gray-500"}>
-                          {branch.status}
-                        </Badge>
-                        <span className="font-medium">{branch.name}</span>
-                        <code className="text-xs bg-muted px-1 py-0.5 rounded truncate max-w-[200px]">
-                          {branch.connection_string}
-                        </code>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() =>
-                            copyToClipboard(branch.connection_string, `branch-${branch.id}`)
-                          }
-                        >
-                          {copied === `branch-${branch.id}` ? "コピー済み!" : "コピー"}
-                        </Button>
-                        {branch.status === "running" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleResetBranch(branch.id)}
-                          >
-                            リセット
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-red-500"
-                          onClick={() => handleDeleteBranch(branch.id)}
-                        >
-                          削除
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <BranchTree
+                  branches={branches}
+                  statusColors={statusColors}
+                  copied={copied}
+                  onCopy={copyToClipboard}
+                  onReset={handleResetBranch}
+                  onDelete={handleDeleteBranch}
+                />
               )}
               <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
                 <div className="space-y-1">
@@ -555,6 +517,100 @@ export default function ProjectDetailPage() {
           </Card>
         </div>
       </main>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Branch Tree Component
+// ---------------------------------------------------------------------------
+
+interface BranchTreeProps {
+  branches: Branch[];
+  statusColors: Record<string, string>;
+  copied: string | null;
+  onCopy: (text: string, key: string) => void;
+  onReset: (branchId: string) => void;
+  onDelete: (branchId: string) => void;
+}
+
+function BranchTree({
+  branches,
+  statusColors,
+  copied,
+  onCopy,
+  onReset,
+  onDelete,
+}: BranchTreeProps) {
+  // Build tree: root branches (parent_branch_id == null) and their children
+  const rootBranches = branches.filter((b) => !b.parent_branch_id);
+  const childrenOf = (parentId: string) =>
+    branches.filter((b) => b.parent_branch_id === parentId);
+
+  const renderBranch = (branch: Branch, depth: number = 0) => {
+    const children = childrenOf(branch.id);
+    return (
+      <div key={branch.id} className="space-y-1">
+        <div
+          className="flex items-center justify-between p-2 border rounded"
+          style={{ marginLeft: `${depth * 24}px` }}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {depth > 0 && (
+              <span className="text-muted-foreground text-sm select-none">└─</span>
+            )}
+            <Badge className={statusColors[branch.status] || "bg-gray-500"}>
+              {branch.status}
+            </Badge>
+            <span className="font-medium truncate">{branch.name}</span>
+            {depth === 0 && (
+              <Badge variant="secondary" className="text-xs">main</Badge>
+            )}
+          </div>
+          <div className="flex gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onCopy(branch.connection_string, `branch-${branch.id}`)}
+            >
+              {copied === `branch-${branch.id}` ? "コピー済み!" : "コピー"}
+            </Button>
+            {branch.status === "running" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onReset(branch.id)}
+              >
+                リセット
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-red-500"
+              onClick={() => onDelete(branch.id)}
+            >
+              削除
+            </Button>
+          </div>
+        </div>
+        {children.length > 0 && (
+          <div className="space-y-1">
+            {children.map((child) => renderBranch(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-1">
+      {/* Main project as root */}
+      <div className="flex items-center gap-2 p-2 border rounded bg-muted/50">
+        <Badge className="bg-blue-500">main</Badge>
+        <span className="font-medium">プロジェクト本体</span>
+      </div>
+      {rootBranches.map((branch) => renderBranch(branch, 0))}
     </div>
   );
 }
