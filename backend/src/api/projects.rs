@@ -9,7 +9,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::jwt::Claims;
-use crate::db::models::Project;
+use crate::db::models::{Project, ProjectEnvironment};
 use crate::error::AppError;
 use crate::orchestrator::docker;
 use crate::state::AppState;
@@ -28,6 +28,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/{id}/pool",
             get(get_pool_settings).patch(update_pool_settings),
+        )
+        .route(
+            "/{id}/environments",
+            get(list_environments).post(create_environment),
+        )
+        .route(
+            "/{id}/environments/{env_id}",
+            get(get_environment).delete(delete_environment),
         )
 }
 
@@ -686,6 +694,190 @@ async fn update_pool_settings(
         default_pool_size: updated.default_pool_size,
         pgbouncer_port: updated.pgbouncer_port,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Environment Endpoints (3.4)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct EnvironmentResponse {
+    id: String,
+    project_id: String,
+    name: String,
+    endpoint_type: String,
+    connection_string: String,
+    is_default: bool,
+}
+
+impl EnvironmentResponse {
+    fn from(env: &ProjectEnvironment) -> Self {
+        Self {
+            id: env.id.to_string(),
+            project_id: env.project_id.to_string(),
+            name: env.name.clone(),
+            endpoint_type: env.endpoint_type.clone(),
+            connection_string: env.connection_string.clone(),
+            is_default: env.is_default,
+        }
+    }
+}
+
+async fn list_environments(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<EnvironmentResponse>>, AppError> {
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let _project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(project_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    let environments = sqlx::query_as::<_, ProjectEnvironment>(
+        "SELECT * FROM project_environments WHERE project_id = $1 ORDER BY is_default DESC, name",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(
+        environments.iter().map(EnvironmentResponse::from).collect(),
+    ))
+}
+
+#[derive(Deserialize, Validate)]
+struct CreateEnvironmentRequest {
+    #[validate(length(min = 1, max = 50))]
+    name: String,
+    #[validate(length(min = 1, max = 20))]
+    endpoint_type: Option<String>,
+    is_default: Option<bool>,
+}
+
+async fn create_environment(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path(project_id): Path<Uuid>,
+    Json(req): Json<CreateEnvironmentRequest>,
+) -> Result<Json<EnvironmentResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(project_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    let endpoint_type = req.endpoint_type.unwrap_or_else(|| "direct".to_string());
+    if !matches!(endpoint_type.as_str(), "direct" | "pooled") {
+        return Err(AppError::BadRequest(
+            "endpoint_type must be 'direct' or 'pooled'".into(),
+        ));
+    }
+
+    let connection_string = if endpoint_type == "pooled" {
+        project.pgbouncer_port.map_or(
+            Err(AppError::BadRequest(
+                "Pooled endpoint not available for this project".into(),
+            )),
+            |p| {
+                Ok(format!(
+                    "postgres://{}:{}@localhost:{}/{}",
+                    project.db_user, project.db_password, p, project.db_name
+                ))
+            },
+        )?
+    } else {
+        format!(
+            "postgres://{}:{}@localhost:{}/{}",
+            project.db_user, project.db_password, project.port, project.db_name
+        )
+    };
+
+    let is_default = req.is_default.unwrap_or(false);
+
+    if is_default {
+        sqlx::query("UPDATE project_environments SET is_default = false WHERE project_id = $1")
+            .bind(project_id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    let env = sqlx::query_as::<_, ProjectEnvironment>(
+        "INSERT INTO project_environments (project_id, name, endpoint_type, connection_string, is_default)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *",
+    )
+    .bind(project_id)
+    .bind(&req.name)
+    .bind(&endpoint_type)
+    .bind(&connection_string)
+    .bind(is_default)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(EnvironmentResponse::from(&env)))
+}
+
+async fn get_environment(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path((project_id, env_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<EnvironmentResponse>, AppError> {
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let _project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(project_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    let env = sqlx::query_as::<_, ProjectEnvironment>(
+        "SELECT * FROM project_environments WHERE id = $1 AND project_id = $2",
+    )
+    .bind(env_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    Ok(Json(EnvironmentResponse::from(&env)))
+}
+
+async fn delete_environment(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path((project_id, env_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let _project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(project_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    sqlx::query("DELETE FROM project_environments WHERE id = $1 AND project_id = $2")
+        .bind(env_id)
+        .bind(project_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
 // ---------------------------------------------------------------------------

@@ -36,3 +36,16 @@ pub struct Project {
     pub max_client_conn: i32,
     pub default_pool_size: i32,
 }
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct ProjectEnvironment {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub endpoint_type: String,
+    pub connection_string: String,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

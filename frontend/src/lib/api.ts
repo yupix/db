@@ -71,6 +71,15 @@ export interface PoolSettings {
   pgbouncer_port: number | null;
 }
 
+export interface Environment {
+  id: string;
+  project_id: string;
+  name: string;
+  endpoint_type: string;
+  connection_string: string;
+  is_default: boolean;
+}
+
 export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api<AuthResponse>("/api/auth/register", { method: "POST", body: data }),
@@ -120,4 +129,16 @@ export const projectsApi = {
     data: { pool_mode?: string; max_client_conn?: number; default_pool_size?: number }
   ) =>
     api<PoolSettings>(`/api/projects/${id}/pool`, { method: "PATCH", body: data }),
+
+  listEnvironments: (id: string) =>
+    api<Environment[]>(`/api/projects/${id}/environments`),
+
+  createEnvironment: (
+    id: string,
+    data: { name: string; endpoint_type?: string; is_default?: boolean }
+  ) =>
+    api<Environment>(`/api/projects/${id}/environments`, { method: "POST", body: data }),
+
+  deleteEnvironment: (id: string, envId: string) =>
+    api<{ deleted: boolean }>(`/api/projects/${id}/environments/${envId}`, { method: "DELETE" }),
 };
