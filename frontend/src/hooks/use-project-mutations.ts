@@ -17,6 +17,7 @@ export function useProjectMutations(projectId: string) {
     mutationFn: () => projectsApi.start(projectId),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ["project", projectId] });
+      await queryClient.cancelQueries({ queryKey: ["projects"] });
       const previous = queryClient.getQueryData<Project>(["project", projectId]);
       updateCache((old) => old ? { ...old, status: "running" } : undefined);
       return { previous };
@@ -36,6 +37,7 @@ export function useProjectMutations(projectId: string) {
     mutationFn: () => projectsApi.stop(projectId),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ["project", projectId] });
+      await queryClient.cancelQueries({ queryKey: ["projects"] });
       const previous = queryClient.getQueryData<Project>(["project", projectId]);
       updateCache((old) => old ? { ...old, status: "stopped" } : undefined);
       return { previous };
@@ -53,6 +55,10 @@ export function useProjectMutations(projectId: string) {
 
   const remove = useMutation({
     mutationFn: () => projectsApi.delete(projectId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.removeQueries({ queryKey: ["project", projectId] });
+    },
   });
 
   return { start, stop, remove };

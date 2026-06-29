@@ -96,7 +96,22 @@ async fn create_project(
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let slug = slugify(&req.name);
+    let slug = {
+        let s = slugify(&req.name);
+        if s.is_empty() {
+            format!(
+                "proj-{}",
+                Uuid::new_v4()
+                    .to_string()
+                    .replace('-', "")
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+            )
+        } else {
+            s
+        }
+    };
 
     let existing_slug = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM projects WHERE slug = $1 AND status != 'deleted'",

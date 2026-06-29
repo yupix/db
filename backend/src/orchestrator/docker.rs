@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::AppError;
 
-const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 pub async fn create_postgres_container(
@@ -96,10 +96,7 @@ pub async fn wait_for_healthy(docker: &Docker, container_id: &str) -> Result<(),
             .inspect_container(container_id, None::<InspectContainerOptions>)
             .await?;
 
-        let health = inspect
-            .state
-            .as_ref()
-            .and_then(|s| s.health.as_ref());
+        let health = inspect.state.as_ref().and_then(|s| s.health.as_ref());
 
         match health {
             Some(h) if h.status == Some(HealthStatusEnum::HEALTHY) => {
@@ -123,7 +120,10 @@ pub async fn start_container(docker: &Docker, container_id: &str) -> Result<(), 
         .start_container(container_id, None::<StartContainerOptions<String>>)
         .await?;
 
-    tracing::info!("Starting container {}, waiting for healthy...", container_id);
+    tracing::info!(
+        "Starting container {}, waiting for healthy...",
+        container_id
+    );
     wait_for_healthy(docker, container_id).await?;
 
     Ok(())
