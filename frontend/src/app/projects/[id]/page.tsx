@@ -101,7 +101,10 @@ export default function ProjectDetailPage() {
     setEnvLoading(true);
     try {
       const env = await projectsApi.createEnvironment(id, envForm);
-      setEnvironments([...environments, env]);
+      const updated = env.is_default
+        ? environments.map((e) => ({ ...e, is_default: false }))
+        : environments;
+      setEnvironments([...updated, env]);
       setEnvForm({ name: "", endpoint_type: "direct", is_default: false });
     } catch (e) {
       alert(e instanceof Error ? e.message : "環境の作成に失敗しました");

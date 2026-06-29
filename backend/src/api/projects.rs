@@ -871,11 +871,15 @@ async fn delete_environment(
             .await?
             .ok_or(AppError::NotFound)?;
 
-    sqlx::query("DELETE FROM project_environments WHERE id = $1 AND project_id = $2")
+    let result = sqlx::query("DELETE FROM project_environments WHERE id = $1 AND project_id = $2")
         .bind(env_id)
         .bind(project_id)
         .execute(&state.db)
         .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
