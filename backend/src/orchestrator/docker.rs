@@ -279,3 +279,190 @@ pub async fn remove_container(docker: &Docker, container_id: &str) -> Result<(),
     docker.remove_container(container_id, options).await?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Branch Container (pg_basebackup)
+// ---------------------------------------------------------------------------
+
+pub struct BranchConfig {
+    pub container_name: String,
+    pub db_name: String,
+    pub db_user: String,
+    pub db_password: String,
+    pub port: u16,
+    pub network_id: Option<String>,
+}
+
+pub async fn create_branch_container(
+    docker: &Docker,
+    config: &BranchConfig,
+    source_container_id: &str,
+    source_db_name: &str,
+    source_db_user: &str,
+) -> Result<String, AppError> {
+    let mut port_bindings = HashMap::new();
+    port_bindings.insert(
+        "5432/tcp".to_string(),
+        Some(vec![PortBinding {
+            host_ip: Some("0.0.0.0".to_string()),
+            host_port: Some(config.port.to_string()),
+        }]),
+    );
+
+    let pg_db = format!("POSTGRES_DB={}", config.db_name);
+    let pg_user = format!("POSTGRES_USER={}", config.db_user);
+    let pg_pass = format!("POSTGRES_PASSWORD={}", config.db_password);
+    let env = vec![pg_db.as_str(), pg_user.as_str(), pg_pass.as_str()];
+
+    let healthcheck = HealthConfig {
+        test: Some(vec![
+            "CMD-SHELL".to_string(),
+            "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB".to_string(),
+        ]),
+        interval: Some(5_000_000_000),
+        timeout: Some(5_000_000_000),
+        retries: Some(10),
+        start_period: Some(10_000_000_000),
+        ..Default::default()
+    };
+
+    let mut host_config = HostConfig {
+        port_bindings: Some(port_bindings),
+        ..Default::default()
+    };
+
+    if let Some(net_id) = &config.network_id {
+        host_config.network_mode = Some(net_id.clone());
+    }
+
+    let container_config = ContainerConfig {
+        image: Some("postgres:16-alpine"),
+        env: Some(env),
+        host_config: Some(host_config),
+        healthcheck: Some(healthcheck),
+        ..Default::default()
+    };
+
+    let options = Some(CreateContainerOptions {
+        name: &config.container_name,
+        platform: None,
+    });
+
+    let result = docker.create_container(options, container_config).await?;
+    let branch_container_id = result.id.clone();
+
+    docker
+        .start_container(&branch_container_id, None::<StartContainerOptions<String>>)
+        .await?;
+
+    tracing::info!(
+        "Branch container {} created, waiting for healthy...",
+        config.container_name
+    );
+
+    wait_for_healthy(docker, &branch_container_id).await?;
+
+    // Copy data from source using pg_dump | psql
+    let dump_cmd = format!(
+        "pg_dump -U {} -d {} --no-owner --no-privileges",
+        source_db_user, source_db_name
+    );
+
+    let restore_cmd = format!("psql -U {} -d {} -q", config.db_user, config.db_name);
+
+    // Execute pg_dump in source container and pipe to psql in branch container
+    // We use a shell command that runs both in sequence
+    let copy_script = format!(
+        "docker exec {} {} | docker exec -i {} {}",
+        source_container_id, dump_cmd, branch_container_id, restore_cmd
+    );
+
+    tracing::info!("Copying data from source to branch: {}", copy_script);
+
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&copy_script)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to copy data: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!("Data copy failed: {}", stderr);
+        // Cleanup: remove the branch container
+        let _ = remove_container(docker, &branch_container_id).await;
+        return Err(AppError::Internal(format!(
+            "Failed to copy data to branch: {}",
+            stderr
+        )));
+    }
+
+    tracing::info!(
+        "Branch container {} created and data copied successfully",
+        config.container_name
+    );
+
+    Ok(branch_container_id)
+}
+
+pub async fn reset_branch_container(
+    _docker: &Docker,
+    branch_container_id: &str,
+    source_container_id: &str,
+    source_db_name: &str,
+    source_db_user: &str,
+    branch_db_name: &str,
+    branch_db_user: &str,
+) -> Result<(), AppError> {
+    // Drop and recreate the database
+    let drop_cmd = format!(
+        "docker exec {} psql -U {} -c \"DROP DATABASE IF EXISTS {}\" postgres",
+        branch_container_id, branch_db_user, branch_db_name
+    );
+    let create_cmd = format!(
+        "docker exec {} psql -U {} -c \"CREATE DATABASE {}\" postgres",
+        branch_container_id, branch_db_user, branch_db_name
+    );
+
+    tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&drop_cmd)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to drop database: {}", e)))?;
+
+    tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&create_cmd)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create database: {}", e)))?;
+
+    // Copy data from source
+    let dump_cmd = format!(
+        "pg_dump -U {} -d {} --no-owner --no-privileges",
+        source_db_user, source_db_name
+    );
+    let restore_cmd = format!("psql -U {} -d {} -q", branch_db_user, branch_db_name);
+    let copy_script = format!(
+        "docker exec {} {} | docker exec -i {} {}",
+        source_container_id, dump_cmd, branch_container_id, restore_cmd
+    );
+
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&copy_script)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to copy data: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "Failed to reset branch: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}

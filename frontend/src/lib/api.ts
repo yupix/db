@@ -80,6 +80,17 @@ export interface Environment {
   is_default: boolean;
 }
 
+export interface Branch {
+  id: string;
+  project_id: string;
+  parent_branch_id: string | null;
+  name: string;
+  status: string;
+  port: number;
+  connection_string: string;
+  created_at: string;
+}
+
 export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api<AuthResponse>("/api/auth/register", { method: "POST", body: data }),
@@ -141,4 +152,23 @@ export const projectsApi = {
 
   deleteEnvironment: (id: string, envId: string) =>
     api<{ deleted: boolean }>(`/api/projects/${id}/environments/${envId}`, { method: "DELETE" }),
+
+  // Branch operations
+  listBranches: (id: string) =>
+    api<Branch[]>(`/api/projects/${id}/branches`),
+
+  createBranch: (
+    id: string,
+    data: { name: string; parent_branch_id?: string }
+  ) =>
+    api<Branch>(`/api/projects/${id}/branches`, { method: "POST", body: data }),
+
+  deleteBranch: (id: string, branchId: string) =>
+    api<{ deleted: boolean }>(`/api/projects/${id}/branches/${branchId}`, { method: "DELETE" }),
+
+  renameBranch: (id: string, branchId: string, data: { name: string }) =>
+    api<Branch>(`/api/projects/${id}/branches/${branchId}`, { method: "PATCH", body: data }),
+
+  resetBranch: (id: string, branchId: string) =>
+    api<Branch>(`/api/projects/${id}/branches/${branchId}/reset`, { method: "POST" }),
 };

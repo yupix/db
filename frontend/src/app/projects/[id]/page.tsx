@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectMutations } from "@/hooks/use-project-mutations";
-import { projectsApi, type PoolSettings, type Environment } from "@/lib/api";
+import { projectsApi, type PoolSettings, type Environment, type Branch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +41,12 @@ export default function ProjectDetailPage() {
     endpoint_type: "direct",
     is_default: false,
   });
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [branchForm, setBranchForm] = useState({
+    name: "",
+    parent_branch_id: "",
+  });
 
   useEffect(() => {
     if (!isAuthenticated && !authLoading) {
@@ -59,6 +65,7 @@ export default function ProjectDetailPage() {
         });
       }).catch(() => {});
       projectsApi.listEnvironments(id).then(setEnvironments).catch(() => {});
+      projectsApi.listBranches(id).then(setBranches).catch(() => {});
     }
   }, [id]);
 
@@ -120,6 +127,43 @@ export default function ProjectDetailPage() {
       setEnvironments(environments.filter((e) => e.id !== envId));
     } catch (e) {
       alert(e instanceof Error ? e.message : "環境の削除に失敗しました");
+    }
+  };
+
+  const handleCreateBranch = async () => {
+    if (!id) return;
+    setBranchLoading(true);
+    try {
+      const branch = await projectsApi.createBranch(id, {
+        name: branchForm.name,
+        parent_branch_id: branchForm.parent_branch_id || undefined,
+      });
+      setBranches([...branches, branch]);
+      setBranchForm({ name: "", parent_branch_id: "" });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "ブランチの作成に失敗しました");
+    } finally {
+      setBranchLoading(false);
+    }
+  };
+
+  const handleDeleteBranch = async (branchId: string) => {
+    if (!id || !confirm("このブランチを削除しますか？")) return;
+    try {
+      await projectsApi.deleteBranch(id, branchId);
+      setBranches(branches.filter((b) => b.id !== branchId));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "ブランチの削除に失敗しました");
+    }
+  };
+
+  const handleResetBranch = async (branchId: string) => {
+    if (!id || !confirm("このブランチをリセットしますか？データが上書きされます。")) return;
+    try {
+      const updated = await projectsApi.resetBranch(id, branchId);
+      setBranches(branches.map((b) => (b.id === branchId ? updated : b)));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "ブランチのリセットに失敗しました");
     }
   };
 
@@ -377,6 +421,103 @@ export default function ProjectDetailPage() {
                   disabled={envLoading || !envForm.name}
                 >
                   {envLoading ? "作成中..." : "追加"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Branches */}
+          <Card>
+            <CardHeader>
+              <CardTitle>ブランチ</CardTitle>
+              <CardDescription>
+                データベースのコピー（ブランチ）を作成・管理
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {branches.length > 0 && (
+                <div className="space-y-2">
+                  {branches.map((branch) => (
+                    <div
+                      key={branch.id}
+                      className="flex items-center justify-between p-2 border rounded"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Badge className={statusColors[branch.status] || "bg-gray-500"}>
+                          {branch.status}
+                        </Badge>
+                        <span className="font-medium">{branch.name}</span>
+                        <code className="text-xs bg-muted px-1 py-0.5 rounded truncate max-w-[200px]">
+                          {branch.connection_string}
+                        </code>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            copyToClipboard(branch.connection_string, `branch-${branch.id}`)
+                          }
+                        >
+                          {copied === `branch-${branch.id}` ? "コピー済み!" : "コピー"}
+                        </Button>
+                        {branch.status === "running" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleResetBranch(branch.id)}
+                          >
+                            リセット
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-500"
+                          onClick={() => handleDeleteBranch(branch.id)}
+                        >
+                          削除
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                <div className="space-y-1">
+                  <Label htmlFor="branch_name">ブランチ名</Label>
+                  <Input
+                    id="branch_name"
+                    placeholder="my-branch"
+                    value={branchForm.name}
+                    onChange={(e) => setBranchForm({ ...branchForm, name: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="branch_parent">親ブランチ（任意）</Label>
+                  <select
+                    id="branch_parent"
+                    className="p-2 border rounded bg-background w-full"
+                    value={branchForm.parent_branch_id}
+                    onChange={(e) =>
+                      setBranchForm({ ...branchForm, parent_branch_id: e.target.value })
+                    }
+                  >
+                    <option value="">メイン（プロジェクト本体）</option>
+                    {branches
+                      .filter((b) => b.status === "running")
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <Button
+                  onClick={handleCreateBranch}
+                  disabled={branchLoading || !branchForm.name}
+                >
+                  {branchLoading ? "作成中..." : "ブランチ作成"}
                 </Button>
               </div>
             </CardContent>

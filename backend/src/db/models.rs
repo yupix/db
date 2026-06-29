@@ -49,3 +49,18 @@ pub struct ProjectEnvironment {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct Branch {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub parent_branch_id: Option<Uuid>,
+    pub name: String,
+    pub container_id: Option<String>,
+    pub container_name: String,
+    pub port: i32,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

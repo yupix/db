@@ -37,6 +37,20 @@ pub fn router() -> Router<Arc<AppState>> {
             "/{id}/environments/{env_id}",
             get(get_environment).delete(delete_environment),
         )
+        .route(
+            "/{id}/branches",
+            get(super::branches::list_branches).post(super::branches::create_branch),
+        )
+        .route(
+            "/{id}/branches/{branch_id}",
+            get(super::branches::get_branch)
+                .delete(super::branches::delete_branch)
+                .patch(super::branches::rename_branch),
+        )
+        .route(
+            "/{id}/branches/{branch_id}/reset",
+            post(super::branches::reset_branch),
+        )
 }
 
 #[derive(Serialize)]
