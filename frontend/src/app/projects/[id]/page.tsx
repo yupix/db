@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useProject } from "@/hooks/use-projects";
-import { projectsApi } from "@/lib/api";
+import { useProjectMutations } from "@/hooks/use-project-mutations";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,8 +22,8 @@ export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { isAuthenticated, loadUser, isLoading: authLoading } = useAuth();
   const router = useRouter();
-  const { data: project, isLoading, refetch } = useProject(id);
-  const [actionLoading, setActionLoading] = useState(false);
+  const { data: project, isLoading } = useProject(id);
+  const { start, stop, remove } = useProjectMutations(id);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -32,24 +32,28 @@ export default function ProjectDetailPage() {
     }
   }, [isAuthenticated, authLoading, loadUser, router]);
 
-  const handleAction = async (action: "start" | "stop" | "delete") => {
-    setActionLoading(true);
-    try {
-      if (action === "delete") {
-        if (!confirm("本当に削除しますか？")) return;
-        await projectsApi.delete(id);
-        router.push("/dashboard");
-        return;
-      }
-      if (action === "start") await projectsApi.start(id);
-      if (action === "stop") await projectsApi.stop(id);
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "操作に失敗しました");
-    } finally {
-      setActionLoading(false);
+  const handleAction = (action: "start" | "stop" | "delete") => {
+    if (action === "delete") {
+      if (!confirm("本当に削除しますか？")) return;
+      remove.mutate(undefined, {
+        onSuccess: () => router.push("/dashboard"),
+        onError: (e) => alert(e instanceof Error ? e.message : "削除に失敗しました"),
+      });
+      return;
+    }
+    if (action === "start") {
+      start.mutate(undefined, {
+        onError: (e) => alert(e instanceof Error ? e.message : "起動に失敗しました"),
+      });
+    }
+    if (action === "stop") {
+      stop.mutate(undefined, {
+        onError: (e) => alert(e instanceof Error ? e.message : "停止に失敗しました"),
+      });
     }
   };
+
+  const isPending = start.isPending || stop.isPending || remove.isPending;
 
   const copyConnectionString = () => {
     if (project) {
@@ -125,21 +129,21 @@ export default function ProjectDetailPage() {
             </CardHeader>
             <CardContent className="flex gap-2">
               {project.status === "stopped" && (
-                <Button onClick={() => handleAction("start")} disabled={actionLoading}>
-                  起動
+                <Button onClick={() => handleAction("start")} disabled={isPending}>
+                  {start.isPending ? "起動中..." : "起動"}
                 </Button>
               )}
               {project.status === "running" && (
-                <Button variant="outline" onClick={() => handleAction("stop")} disabled={actionLoading}>
-                  停止
+                <Button variant="outline" onClick={() => handleAction("stop")} disabled={isPending}>
+                  {stop.isPending ? "停止中..." : "停止"}
                 </Button>
               )}
               <Button
                 variant="destructive"
                 onClick={() => handleAction("delete")}
-                disabled={actionLoading}
+                disabled={isPending}
               >
-                削除
+                {remove.isPending ? "削除中..." : "削除"}
               </Button>
             </CardContent>
           </Card>

@@ -179,4 +179,33 @@ mod tests {
         let refresh_claims = verify(&refresh, secret).unwrap();
         assert!(refresh_claims.exp > access_claims.exp);
     }
+
+    #[test]
+    fn test_access_token_15min_expiry() {
+        let secret = "test-secret";
+        let (access, _) = generate("user1", secret).unwrap();
+        let claims = verify(&access, secret).unwrap();
+        let now = Utc::now().timestamp() as usize;
+        let diff = claims.exp - now;
+        assert!(diff <= 900 && diff > 890);
+    }
+
+    #[test]
+    fn test_refresh_token_7day_expiry() {
+        let secret = "test-secret";
+        let (_, refresh) = generate("user1", secret).unwrap();
+        let claims = verify(&refresh, secret).unwrap();
+        let now = Utc::now().timestamp() as usize;
+        let diff = claims.exp - now;
+        let seven_days = 7 * 24 * 60 * 60;
+        assert!(diff <= seven_days && diff > seven_days - 10);
+    }
+
+    #[test]
+    fn test_empty_user_id() {
+        let secret = "test-secret";
+        let (access, _) = generate("", secret).unwrap();
+        let claims = verify(&access, secret).unwrap();
+        assert_eq!(claims.sub, "");
+    }
 }

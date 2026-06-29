@@ -210,8 +210,8 @@ CREATE TABLE projects (
 - [x] 2.7 `DELETE /api/projects/:id` — コンテナ削除 + レコード削除
 - [x] 2.8 `PATCH /api/projects/:id` — 名前変更
 - [x] 2.9 空きポート自動割当ロジック
-- [ ] 2.10 コンテナヘルスチェック待機
-- [ ] 2.11 cargo test でOrchestrator・プロジェクトAPIのテスト
+- [x] 2.10 コンテナヘルスチェック待機
+- [x] 2.11 cargo test でOrchestrator・プロジェクトAPIのテスト
 
 ### Next.js 側
 
@@ -219,7 +219,7 @@ CREATE TABLE projects (
 - [x] 2.13 `/projects/new` — 作成フォーム
 - [x] 2.14 `/projects/[id]` — 詳細画面（ステータス・接続文字列・操作ボタン）
 - [x] 2.15 TanStack Query でデータフェッチ・キャッシュ
-- [ ] 2.16 楽観的UI更新（起動/停止）
+- [x] 2.16 楽観的UI更新（起動/停止）
 - [x] 2.17 接続文字列コピーボタン
 - [x] 2.18 npm run build 成功確認
 
@@ -297,7 +297,7 @@ docker compose up -d
 |---|---|
 | Phase 0: 基盤 | ✅ 完了 |
 | Phase 1: 認証 | ✅ 完了 |
-| Phase 2: プロジェクト管理 | 🔄 ほぼ完了（2.10, 2.11, 2.16 残り） |
+| Phase 2: プロジェクト管理 | ✅ 完了 |
 | Phase 3: プール | 未開始 |
 | Phase 4: ブランチ | 未開始 |
 | Phase 5: SQLエディタ | 未開始 |

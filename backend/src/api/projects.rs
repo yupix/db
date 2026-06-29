@@ -340,7 +340,7 @@ async fn update_project(
 fn slugify(name: &str) -> String {
     name.to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -381,4 +381,57 @@ async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
         }
     }
     Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify_basic() {
+        assert_eq!(slugify("My Project"), "my-project");
+        assert_eq!(slugify("hello-world"), "hello-world");
+        assert_eq!(slugify("TestDB"), "testdb");
+    }
+
+    #[test]
+    fn test_slugify_special_chars() {
+        assert_eq!(slugify("My   Project!"), "my-project");
+        assert_eq!(slugify("hello@world#123"), "hello-world-123");
+        assert_eq!(slugify("  spaces  "), "spaces");
+    }
+
+    #[test]
+    fn test_slugify_consecutive_dashes() {
+        assert_eq!(slugify("a---b---c"), "a-b-c");
+    }
+
+    #[test]
+    fn test_slugify_empty() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn test_slugify_japanese() {
+        assert_eq!(slugify("テスト"), "");
+    }
+
+    #[test]
+    fn test_generate_password_length() {
+        let pw = generate_password();
+        assert_eq!(pw.len(), 24);
+    }
+
+    #[test]
+    fn test_generate_password_unique() {
+        let pw1 = generate_password();
+        let pw2 = generate_password();
+        assert_ne!(pw1, pw2);
+    }
+
+    #[test]
+    fn test_generate_password_chars() {
+        let pw = generate_password();
+        assert!(pw.chars().all(|c| c.is_alphanumeric()));
+    }
 }
