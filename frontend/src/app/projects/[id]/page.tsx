@@ -17,6 +17,7 @@ const statusColors: Record<string, string> = {
   running: "bg-green-500",
   stopped: "bg-yellow-500",
   creating: "bg-blue-500",
+  resetting: "bg-purple-500",
   error: "bg-red-500",
 };
 

@@ -132,6 +132,18 @@ pub async fn create_branch(
             .collect::<String>()
     );
 
+    let existing_name = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM branches WHERE project_id = $1 AND name = $2 AND status != 'deleted'",
+    )
+    .bind(project_id)
+    .bind(&req.name)
+    .fetch_one(&state.db)
+    .await?;
+
+    if existing_name > 0 {
+        return Err(AppError::Conflict("Branch name already exists".into()));
+    }
+
     let port = find_available_branch_port(&state).await?;
 
     let source_container_id = parent_branch
@@ -259,6 +271,12 @@ pub async fn delete_branch(
             .await?
             .ok_or(AppError::NotFound)?;
 
+    if branch.status == "creating" {
+        return Err(AppError::Conflict(
+            "Branch is currently being created. Wait for it to finish before deleting.".into(),
+        ));
+    }
+
     if let Some(cid) = &branch.container_id {
         let _ = docker::remove_container(&state.docker, cid).await;
     }
@@ -271,8 +289,9 @@ pub async fn delete_branch(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 pub struct RenameBranchRequest {
+    #[validate(length(min = 1, max = 100))]
     name: Option<String>,
 }
 
@@ -282,6 +301,9 @@ pub async fn rename_branch(
     Path((project_id, branch_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<RenameBranchRequest>,
 ) -> Result<Json<BranchResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let project =
@@ -372,6 +394,12 @@ pub async fn reset_branch(
     let db_name = project.db_name.clone();
     let db_user = project.db_user.clone();
 
+    // Mark as resetting before spawning
+    sqlx::query("UPDATE branches SET status = 'resetting', updated_at = now() WHERE id = $1")
+        .bind(branch_id)
+        .execute(&state.db)
+        .await?;
+
     tokio::spawn(async move {
         let result = docker::reset_branch_container(
             &state_clone.docker,
@@ -398,7 +426,16 @@ pub async fn reset_branch(
             .await;
     });
 
-    Ok(Json(BranchResponse::from(&branch, &project, "localhost")))
+    let updated_branch = sqlx::query_as::<_, Branch>("SELECT * FROM branches WHERE id = $1")
+        .bind(branch_id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(BranchResponse::from(
+        &updated_branch,
+        &project,
+        "localhost",
+    )))
 }
 
 async fn find_available_branch_port(state: &AppState) -> Result<i32, AppError> {

@@ -362,39 +362,67 @@ pub async fn create_branch_container(
 
     wait_for_healthy(docker, &branch_container_id).await?;
 
-    // Copy data from source using pg_dump | psql
-    let dump_cmd = format!(
-        "pg_dump -U {} -d {} --no-owner --no-privileges",
-        source_db_user, source_db_name
-    );
-
-    let restore_cmd = format!("psql -U {} -d {} -q", config.db_user, config.db_name);
-
-    // Execute pg_dump in source container and pipe to psql in branch container
-    // We use a shell command that runs both in sequence
-    let copy_script = format!(
-        "docker exec {} {} | docker exec -i {} {}",
-        source_container_id, dump_cmd, branch_container_id, restore_cmd
-    );
-
-    tracing::info!("Copying data from source to branch: {}", copy_script);
-
-    let output = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&copy_script)
+    // Copy data: pg_dump from source -> collect -> psql to branch (cross-platform)
+    let pg_dump_output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            source_container_id,
+            "pg_dump",
+            "-U",
+            source_db_user,
+            "-d",
+            source_db_name,
+            "--no-owner",
+            "--no-privileges",
+        ])
         .output()
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to copy data: {}", e)))?;
+        .map_err(|e| AppError::Internal(format!("Failed to run pg_dump: {}", e)))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("Data copy failed: {}", stderr);
-        // Cleanup: remove the branch container
+    if !pg_dump_output.status.success() {
+        let stderr = String::from_utf8_lossy(&pg_dump_output.stderr);
         let _ = remove_container(docker, &branch_container_id).await;
-        return Err(AppError::Internal(format!(
-            "Failed to copy data to branch: {}",
-            stderr
-        )));
+        return Err(AppError::Internal(format!("pg_dump failed: {}", stderr)));
+    }
+
+    // Feed dump output to psql in branch container
+    let mut psql_child = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            &branch_container_id,
+            "psql",
+            "-U",
+            &config.db_user,
+            "-d",
+            &config.db_name,
+            "-q",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to start psql: {}", e)))?;
+
+    {
+        use tokio::io::AsyncWriteExt;
+        if let Some(mut stdin) = psql_child.stdin.take() {
+            stdin
+                .write_all(&pg_dump_output.stdout)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to write to psql: {}", e)))?;
+        }
+    }
+
+    let psql_result = psql_child
+        .wait_with_output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to wait for psql: {}", e)))?;
+
+    if !psql_result.status.success() {
+        let stderr = String::from_utf8_lossy(&psql_result.stderr);
+        let _ = remove_container(docker, &branch_container_id).await;
+        return Err(AppError::Internal(format!("psql failed: {}", stderr)));
     }
 
     tracing::info!(
@@ -414,53 +442,114 @@ pub async fn reset_branch_container(
     branch_db_name: &str,
     branch_db_user: &str,
 ) -> Result<(), AppError> {
-    // Drop and recreate the database
-    let drop_cmd = format!(
-        "docker exec {} psql -U {} -c \"DROP DATABASE IF EXISTS {}\" postgres",
-        branch_container_id, branch_db_user, branch_db_name
-    );
-    let create_cmd = format!(
-        "docker exec {} psql -U {} -c \"CREATE DATABASE {}\" postgres",
-        branch_container_id, branch_db_user, branch_db_name
-    );
-
-    tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&drop_cmd)
+    // Drop and recreate the database (cross-platform docker CLI)
+    let drop_output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            branch_container_id,
+            "psql",
+            "-U",
+            branch_db_user,
+            "-d",
+            "postgres",
+            "-c",
+            &format!("DROP DATABASE IF EXISTS {}", branch_db_name),
+        ])
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to drop database: {}", e)))?;
 
-    tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&create_cmd)
+    if !drop_output.status.success() {
+        return Err(AppError::Internal(format!(
+            "Failed to drop database: {}",
+            String::from_utf8_lossy(&drop_output.stderr)
+        )));
+    }
+
+    let create_output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            branch_container_id,
+            "psql",
+            "-U",
+            branch_db_user,
+            "-d",
+            "postgres",
+            "-c",
+            &format!("CREATE DATABASE {}", branch_db_name),
+        ])
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to create database: {}", e)))?;
 
-    // Copy data from source
-    let dump_cmd = format!(
-        "pg_dump -U {} -d {} --no-owner --no-privileges",
-        source_db_user, source_db_name
-    );
-    let restore_cmd = format!("psql -U {} -d {} -q", branch_db_user, branch_db_name);
-    let copy_script = format!(
-        "docker exec {} {} | docker exec -i {} {}",
-        source_container_id, dump_cmd, branch_container_id, restore_cmd
-    );
+    if !create_output.status.success() {
+        return Err(AppError::Internal(format!(
+            "Failed to create database: {}",
+            String::from_utf8_lossy(&create_output.stderr)
+        )));
+    }
 
-    let output = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&copy_script)
+    // Copy data: pg_dump from source -> collect -> psql to branch
+    let pg_dump_output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            source_container_id,
+            "pg_dump",
+            "-U",
+            source_db_user,
+            "-d",
+            source_db_name,
+            "--no-owner",
+            "--no-privileges",
+        ])
         .output()
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to copy data: {}", e)))?;
+        .map_err(|e| AppError::Internal(format!("Failed to run pg_dump: {}", e)))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !pg_dump_output.status.success() {
         return Err(AppError::Internal(format!(
-            "Failed to reset branch: {}",
-            stderr
+            "pg_dump failed: {}",
+            String::from_utf8_lossy(&pg_dump_output.stderr)
+        )));
+    }
+
+    let mut psql_child = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            branch_container_id,
+            "psql",
+            "-U",
+            branch_db_user,
+            "-d",
+            branch_db_name,
+            "-q",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to start psql: {}", e)))?;
+
+    {
+        use tokio::io::AsyncWriteExt;
+        if let Some(mut stdin) = psql_child.stdin.take() {
+            stdin
+                .write_all(&pg_dump_output.stdout)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to write to psql: {}", e)))?;
+        }
+    }
+
+    let psql_result = psql_child
+        .wait_with_output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to wait for psql: {}", e)))?;
+
+    if !psql_result.status.success() {
+        return Err(AppError::Internal(format!(
+            "psql failed: {}",
+            String::from_utf8_lossy(&psql_result.stderr)
         )));
     }
 
