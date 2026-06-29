@@ -29,4 +29,10 @@ pub struct Project {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub pgbouncer_container_id: Option<String>,
+    pub pgbouncer_port: Option<i32>,
+    pub docker_network_id: Option<String>,
+    pub pool_mode: String,
+    pub max_client_conn: i32,
+    pub default_pool_size: i32,
 }

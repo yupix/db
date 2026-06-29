@@ -235,9 +235,9 @@ CREATE TABLE projects (
 ## 今後の拡張ロードマップ（後日対応）
 
 ### Phase 3: コネクションプール 🔄
-- [ ] 3.1 プロジェクト単位でPgBouncerコンテナ起動
-- [ ] 3.2 接続URLをPgBouncer経由にルーティング
-- [ ] 3.3 プール設定管理API（max_connections, pool_mode等）
+- [x] 3.1 プロジェクト単位でPgBouncerコンテナ起動
+- [x] 3.2 接続URLをPgBouncer経由にルーティング
+- [x] 3.3 プール設定管理API（max_connections, pool_mode等）
 - [ ] 3.4 環境別エンドポイント（dev/staging/prod）
 
 ### Phase 4: ブランチ機能 🌿
@@ -298,7 +298,7 @@ docker compose up -d
 | Phase 0: 基盤 | ✅ 完了 |
 | Phase 1: 認証 | ✅ 完了 |
 | Phase 2: プロジェクト管理 | ✅ 完了 |
-| Phase 3: プール | 未開始 |
+| Phase 3: プール | 🔄 ほぼ完了（3.4 残り） |
 | Phase 4: ブランチ | 未開始 |
 | Phase 5: SQLエディタ | 未開始 |
 | Phase 6: チーム | 未開始 |

@@ -5,9 +5,11 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectMutations } from "@/hooks/use-project-mutations";
+import { projectsApi, type PoolSettings } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
 
@@ -24,13 +26,33 @@ export default function ProjectDetailPage() {
   const router = useRouter();
   const { data: project, isLoading } = useProject(id);
   const { start, stop, remove } = useProjectMutations(id);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [poolSettings, setPoolSettings] = useState<PoolSettings | null>(null);
+  const [poolLoading, setPoolLoading] = useState(false);
+  const [poolForm, setPoolForm] = useState({
+    pool_mode: "transaction",
+    max_client_conn: 100,
+    default_pool_size: 20,
+  });
 
   useEffect(() => {
     if (!isAuthenticated && !authLoading) {
       loadUser().catch(() => router.push("/login"));
     }
   }, [isAuthenticated, authLoading, loadUser, router]);
+
+  useEffect(() => {
+    if (id) {
+      projectsApi.getPoolSettings(id).then((s) => {
+        setPoolSettings(s);
+        setPoolForm({
+          pool_mode: s.pool_mode,
+          max_client_conn: s.max_client_conn,
+          default_pool_size: s.default_pool_size,
+        });
+      }).catch(() => {});
+    }
+  }, [id]);
 
   const handleAction = (action: "start" | "stop" | "delete") => {
     if (action === "delete") {
@@ -53,15 +75,26 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const isPending = start.isPending || stop.isPending || remove.isPending;
-
-  const copyConnectionString = () => {
-    if (project) {
-      navigator.clipboard.writeText(project.connection_string);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+  const handleSavePool = async () => {
+    if (!id) return;
+    setPoolLoading(true);
+    try {
+      const updated = await projectsApi.updatePoolSettings(id, poolForm);
+      setPoolSettings(updated);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "プール設定の更新に失敗しました");
+    } finally {
+      setPoolLoading(false);
     }
   };
+
+  const copyToClipboard = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  const isPending = start.isPending || stop.isPending || remove.isPending;
 
   if (authLoading || !isAuthenticated) return null;
   if (isLoading) return <div className="p-8">読み込み中...</div>;
@@ -89,28 +122,58 @@ export default function ProjectDetailPage() {
         </div>
 
         <div className="grid gap-4">
+          {/* Connection Info */}
           <Card>
             <CardHeader>
               <CardTitle>接続情報</CardTitle>
               <CardDescription>アプリケーションから接続するための情報</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
+              {/* Direct connection */}
               <div>
-                <Label className="text-xs text-muted-foreground">接続文字列</Label>
+                <Label className="text-xs text-muted-foreground">直接接続（Postgres）</Label>
                 <div className="flex items-center gap-2 mt-1">
                   <code className="flex-1 p-2 bg-muted rounded text-sm break-all">
                     {project.connection_string}
                   </code>
-                  <Button variant="outline" size="sm" onClick={copyConnectionString}>
-                    {copied ? "コピー済み!" : "コピー"}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => copyToClipboard(project.connection_string, "direct")}
+                  >
+                    {copied === "direct" ? "コピー済み!" : "コピー"}
                   </Button>
                 </div>
+                <p className="text-xs text-muted-foreground mt-1">Port: {project.port}</p>
               </div>
-              <div className="grid grid-cols-3 gap-4 text-sm">
+
+              {/* Pooled connection */}
+              {project.pooled_connection_string && (
                 <div>
-                  <Label className="text-xs text-muted-foreground">ポート</Label>
-                  <p className="font-mono">{project.port}</p>
+                  <Label className="text-xs text-muted-foreground">
+                    プール接続（PgBouncer）推奨
+                  </Label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="flex-1 p-2 bg-muted rounded text-sm break-all">
+                      {project.pooled_connection_string}
+                    </code>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        copyToClipboard(project.pooled_connection_string!, "pooled")
+                      }
+                    >
+                      {copied === "pooled" ? "コピー済み!" : "コピー"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Port: {project.pgbouncer_port}
+                  </p>
                 </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <Label className="text-xs text-muted-foreground">データベース</Label>
                   <p className="font-mono">{project.db_name}</p>
@@ -123,6 +186,71 @@ export default function ProjectDetailPage() {
             </CardContent>
           </Card>
 
+          {/* Pool Settings */}
+          {poolSettings && (
+            <Card>
+              <CardHeader>
+                <CardTitle>プール設定</CardTitle>
+                <CardDescription>
+                  PgBouncerのコネクションプール設定（変更は再起動後に反映されます）
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="pool_mode">プールモード</Label>
+                  <select
+                    id="pool_mode"
+                    className="w-full p-2 border rounded bg-background"
+                    value={poolForm.pool_mode}
+                    onChange={(e) =>
+                      setPoolForm({ ...poolForm, pool_mode: e.target.value })
+                    }
+                  >
+                    <option value="session">session</option>
+                    <option value="transaction">transaction</option>
+                    <option value="statement">statement</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="max_client_conn">最大クライアント接続数</Label>
+                  <Input
+                    id="max_client_conn"
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={poolForm.max_client_conn}
+                    onChange={(e) =>
+                      setPoolForm({
+                        ...poolForm,
+                        max_client_conn: parseInt(e.target.value) || 100,
+                      })
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="default_pool_size">デフォルトプールサイズ</Label>
+                  <Input
+                    id="default_pool_size"
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={poolForm.default_pool_size}
+                    onChange={(e) =>
+                      setPoolForm({
+                        ...poolForm,
+                        default_pool_size: parseInt(e.target.value) || 20,
+                      })
+                    }
+                  />
+                </div>
+                <Button onClick={handleSavePool} disabled={poolLoading}>
+                  {poolLoading ? "保存中..." : "プール設定を保存"}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Actions */}
           <Card>
             <CardHeader>
               <CardTitle>操作</CardTitle>
@@ -134,7 +262,11 @@ export default function ProjectDetailPage() {
                 </Button>
               )}
               {project.status === "running" && (
-                <Button variant="outline" onClick={() => handleAction("stop")} disabled={isPending}>
+                <Button
+                  variant="outline"
+                  onClick={() => handleAction("stop")}
+                  disabled={isPending}
+                >
                   {stop.isPending ? "停止中..." : "停止"}
                 </Button>
               )}

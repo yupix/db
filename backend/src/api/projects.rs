@@ -25,6 +25,10 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/{id}/start", post(start_project))
         .route("/{id}/stop", post(stop_project))
+        .route(
+            "/{id}/pool",
+            get(get_pool_settings).patch(update_pool_settings),
+        )
 }
 
 #[derive(Serialize)]
@@ -34,26 +38,44 @@ struct ProjectResponse {
     slug: String,
     status: String,
     port: i32,
+    pgbouncer_port: Option<i32>,
     db_name: String,
     db_user: String,
     connection_string: String,
+    pooled_connection_string: Option<String>,
+    pool_mode: String,
+    max_client_conn: i32,
+    default_pool_size: i32,
     created_at: String,
 }
 
 impl ProjectResponse {
     fn from(project: &Project, host: &str) -> Self {
+        let connection_string = format!(
+            "postgres://{}:{}@{}:{}/{}",
+            project.db_user, project.db_password, host, project.port, project.db_name
+        );
+        let pooled_connection_string = project.pgbouncer_port.map(|p| {
+            format!(
+                "postgres://{}:{}@{}:{}/{}",
+                project.db_user, project.db_password, host, p, project.db_name
+            )
+        });
+
         Self {
             id: project.id.to_string(),
             name: project.name.clone(),
             slug: project.slug.clone(),
             status: project.status.clone(),
             port: project.port,
+            pgbouncer_port: project.pgbouncer_port,
             db_name: project.db_name.clone(),
             db_user: project.db_user.clone(),
-            connection_string: format!(
-                "postgres://{}:{}@{}:{}/{}",
-                project.db_user, project.db_password, host, project.port, project.db_name
-            ),
+            connection_string,
+            pooled_connection_string,
+            pool_mode: project.pool_mode.clone(),
+            max_client_conn: project.max_client_conn,
+            default_pool_size: project.default_pool_size,
             created_at: project.created_at.to_rfc3339(),
         }
     }
@@ -66,7 +88,7 @@ async fn list_projects(
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let projects = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE user_id = $1 AND status != 'deleted' ORDER BY created_at DESC"
+        "SELECT * FROM projects WHERE user_id = $1 AND status != 'deleted' ORDER BY created_at DESC",
     )
     .bind(user_id)
     .fetch_all(&state.db)
@@ -84,6 +106,9 @@ async fn list_projects(
 struct CreateProjectRequest {
     #[validate(length(min = 1, max = 100))]
     name: String,
+    pool_mode: Option<String>,
+    max_client_conn: Option<i32>,
+    default_pool_size: Option<i32>,
 }
 
 async fn create_project(
@@ -144,13 +169,36 @@ async fn create_project(
             .take(12)
             .collect::<String>()
     );
+    let pgbouncer_name = format!(
+        "pgbouncer-{}",
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
+    let network_name = format!(
+        "net-{}",
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
 
     let port = find_available_port(&state).await?;
+    let pgbouncer_port = find_available_port(&state).await?;
+
+    let pool_mode = req.pool_mode.unwrap_or_else(|| "transaction".to_string());
+    let max_client_conn = req.max_client_conn.unwrap_or(100);
+    let default_pool_size = req.default_pool_size.unwrap_or(20);
 
     let project = sqlx::query_as::<_, Project>(
-        "INSERT INTO projects (user_id, name, slug, container_name, db_name, db_user, db_password, port, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'creating')
-         RETURNING *"
+        "INSERT INTO projects (user_id, name, slug, container_name, db_name, db_user, db_password, port, status, pgbouncer_port, pool_mode, max_client_conn, default_pool_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'creating', $9, $10, $11, $12)
+         RETURNING *",
     )
     .bind(user_id)
     .bind(&req.name)
@@ -160,49 +208,123 @@ async fn create_project(
     .bind(&db_user)
     .bind(&db_password)
     .bind(port)
+    .bind(pgbouncer_port)
+    .bind(&pool_mode)
+    .bind(max_client_conn)
+    .bind(default_pool_size)
     .fetch_one(&state.db)
     .await?;
 
     let state_clone = state.clone();
     let project_id = project.id;
     let cname = container_name.clone();
+    let pgbouncer_cname = pgbouncer_name.clone();
+    let net_name = network_name.clone();
     let dbn = db_name.clone();
     let dbu = db_user.clone();
     let dbp = db_password.clone();
+    let pm = pool_mode.clone();
+    let mcc = max_client_conn;
+    let dps = default_pool_size;
 
     tokio::spawn(async move {
-        let result = docker::create_postgres_container(
+        let network_result = docker::create_docker_network(&state_clone.docker, &net_name).await;
+
+        let network_id = match network_result {
+            Ok(id) => {
+                let _ = sqlx::query(
+                    "UPDATE projects SET docker_network_id = $1, updated_at = now() WHERE id = $2",
+                )
+                .bind(&id)
+                .bind(project_id)
+                .execute(&state_clone.db)
+                .await;
+                id
+            }
+            Err(e) => {
+                tracing::error!("Failed to create Docker network: {}", e);
+                let _ = sqlx::query(
+                    "UPDATE projects SET status = 'error', updated_at = now() WHERE id = $1",
+                )
+                .bind(project_id)
+                .execute(&state_clone.db)
+                .await;
+                return;
+            }
+        };
+
+        let pg_result = docker::create_postgres_container(
             &state_clone.docker,
             &cname,
             &dbn,
             &dbu,
             &dbp,
             port as u16,
+            Some(&network_id),
         )
         .await;
 
-        let new_status = match result {
-            Ok(container_id) => {
+        let _pg_container_id = match pg_result {
+            Ok(id) => {
                 let _ = sqlx::query(
-                    "UPDATE projects SET container_id = $1, status = 'running', updated_at = now() WHERE id = $2"
+                    "UPDATE projects SET container_id = $1, updated_at = now() WHERE id = $2",
                 )
-                .bind(&container_id)
+                .bind(&id)
+                .bind(project_id)
+                .execute(&state_clone.db)
+                .await;
+                id
+            }
+            Err(e) => {
+                tracing::error!("Failed to create Postgres container: {}", e);
+                let _ = sqlx::query(
+                    "UPDATE projects SET status = 'error', updated_at = now() WHERE id = $1",
+                )
                 .bind(project_id)
                 .execute(&state_clone.db)
                 .await;
                 return;
             }
-            Err(e) => {
-                tracing::error!("Failed to create container: {}", e);
-                "error"
-            }
         };
 
-        let _ = sqlx::query("UPDATE projects SET status = $1, updated_at = now() WHERE id = $2")
-            .bind(new_status)
-            .bind(project_id)
-            .execute(&state_clone.db)
-            .await;
+        let pgbouncer_config = docker::PgBouncerConfig {
+            container_name: pgbouncer_cname.clone(),
+            port: pgbouncer_port as u16,
+            backend_host: cname.clone(),
+            backend_port: 5432,
+            backend_db: dbn.clone(),
+            backend_user: dbu.clone(),
+            backend_password: dbp.clone(),
+            pool_mode: pm.clone(),
+            max_client_conn: mcc,
+            default_pool_size: dps,
+            network_id: Some(network_id.clone()),
+        };
+
+        let pgb_result =
+            docker::create_pgbouncer_container(&state_clone.docker, &pgbouncer_config).await;
+
+        match pgb_result {
+            Ok(pgb_id) => {
+                let _ = sqlx::query(
+                    "UPDATE projects SET pgbouncer_container_id = $1, status = 'running', updated_at = now() WHERE id = $2",
+                )
+                .bind(&pgb_id)
+                .bind(project_id)
+                .execute(&state_clone.db)
+                .await;
+                tracing::info!("Project {} fully provisioned (PG + PgBouncer)", project_id);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create PgBouncer container: {}", e);
+                let _ = sqlx::query(
+                    "UPDATE projects SET status = 'error', updated_at = now() WHERE id = $1",
+                )
+                .bind(project_id)
+                .execute(&state_clone.db)
+                .await;
+            }
+        }
     });
 
     Ok(Json(ProjectResponse::from(&project, "localhost")))
@@ -244,6 +366,12 @@ async fn delete_project(
     if let Some(cid) = &project.container_id {
         let _ = docker::remove_container(&state.docker, cid).await;
     }
+    if let Some(pgb_cid) = &project.pgbouncer_container_id {
+        let _ = docker::remove_container(&state.docker, pgb_cid).await;
+    }
+    if let Some(net_id) = &project.docker_network_id {
+        let _ = docker::remove_docker_network(&state.docker, net_id).await;
+    }
 
     sqlx::query("DELETE FROM projects WHERE id = $1")
         .bind(id)
@@ -270,11 +398,15 @@ async fn start_project(
 
     if let Some(cid) = &project.container_id {
         docker::start_container(&state.docker, cid).await?;
-        sqlx::query("UPDATE projects SET status = 'running', updated_at = now() WHERE id = $1")
-            .bind(id)
-            .execute(&state.db)
-            .await?;
     }
+    if let Some(pgb_cid) = &project.pgbouncer_container_id {
+        let _ = docker::start_container(&state.docker, pgb_cid).await;
+    }
+
+    sqlx::query("UPDATE projects SET status = 'running', updated_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
 
     let updated = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1")
         .bind(id)
@@ -299,13 +431,17 @@ async fn stop_project(
             .await?
             .ok_or(AppError::NotFound)?;
 
+    if let Some(pgb_cid) = &project.pgbouncer_container_id {
+        let _ = docker::stop_container(&state.docker, pgb_cid).await;
+    }
     if let Some(cid) = &project.container_id {
         docker::stop_container(&state.docker, cid).await?;
-        sqlx::query("UPDATE projects SET status = 'stopped', updated_at = now() WHERE id = $1")
-            .bind(id)
-            .execute(&state.db)
-            .await?;
     }
+
+    sqlx::query("UPDATE projects SET status = 'stopped', updated_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
 
     let updated = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1")
         .bind(id)
@@ -352,6 +488,120 @@ async fn update_project(
     Ok(Json(ProjectResponse::from(&updated, "localhost")))
 }
 
+// ---------------------------------------------------------------------------
+// Pool Settings API (3.3)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PoolSettingsResponse {
+    pool_mode: String,
+    max_client_conn: i32,
+    default_pool_size: i32,
+    pgbouncer_port: Option<i32>,
+}
+
+async fn get_pool_settings(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PoolSettingsResponse>, AppError> {
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    Ok(Json(PoolSettingsResponse {
+        pool_mode: project.pool_mode,
+        max_client_conn: project.max_client_conn,
+        default_pool_size: project.default_pool_size,
+        pgbouncer_port: project.pgbouncer_port,
+    }))
+}
+
+#[derive(Deserialize, Validate)]
+struct UpdatePoolSettingsRequest {
+    pool_mode: Option<String>,
+    max_client_conn: Option<i32>,
+    default_pool_size: Option<i32>,
+}
+
+async fn update_pool_settings(
+    State(state): State<Arc<AppState>>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdatePoolSettingsRequest>,
+) -> Result<Json<PoolSettingsResponse>, AppError> {
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+
+    let _project =
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    if let Some(mode) = &req.pool_mode {
+        if !matches!(mode.as_str(), "session" | "transaction" | "statement") {
+            return Err(AppError::BadRequest(
+                "pool_mode must be one of: session, transaction, statement".into(),
+            ));
+        }
+        sqlx::query("UPDATE projects SET pool_mode = $1, updated_at = now() WHERE id = $2")
+            .bind(mode)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(max_conn) = req.max_client_conn {
+        if !(1..=10000).contains(&max_conn) {
+            return Err(AppError::BadRequest(
+                "max_client_conn must be between 1 and 10000".into(),
+            ));
+        }
+        sqlx::query("UPDATE projects SET max_client_conn = $1, updated_at = now() WHERE id = $2")
+            .bind(max_conn)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(pool_size) = req.default_pool_size {
+        if !(1..=1000).contains(&pool_size) {
+            return Err(AppError::BadRequest(
+                "default_pool_size must be between 1 and 1000".into(),
+            ));
+        }
+        sqlx::query("UPDATE projects SET default_pool_size = $1, updated_at = now() WHERE id = $2")
+            .bind(pool_size)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    let updated = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(PoolSettingsResponse {
+        pool_mode: updated.pool_mode,
+        max_client_conn: updated.max_client_conn,
+        default_pool_size: updated.default_pool_size,
+        pgbouncer_port: updated.pgbouncer_port,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 fn slugify(name: &str) -> String {
     name.to_lowercase()
         .chars()
@@ -378,12 +628,17 @@ async fn find_available_port(state: &AppState) -> Result<i32, AppError> {
             .fetch_all(&state.db)
             .await?;
 
+    let pgb_ports: Vec<i32> =
+        sqlx::query_scalar("SELECT pgbouncer_port FROM projects WHERE status != 'deleted' AND pgbouncer_port IS NOT NULL")
+            .fetch_all(&state.db)
+            .await?;
+
     let mut port = 15432;
     loop {
         if port > 25432 {
             return Err(AppError::Internal("No available ports".into()));
         }
-        if used_ports.contains(&port) {
+        if used_ports.contains(&port) || pgb_ports.contains(&port) {
             port += 1;
             continue;
         }

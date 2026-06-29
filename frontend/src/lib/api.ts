@@ -53,10 +53,22 @@ export interface Project {
   slug: string;
   status: string;
   port: number;
+  pgbouncer_port: number | null;
   db_name: string;
   db_user: string;
   connection_string: string;
+  pooled_connection_string: string | null;
+  pool_mode: string;
+  max_client_conn: number;
+  default_pool_size: number;
   created_at: string;
+}
+
+export interface PoolSettings {
+  pool_mode: string;
+  max_client_conn: number;
+  default_pool_size: number;
+  pgbouncer_port: number | null;
 }
 
 export const authApi = {
@@ -80,7 +92,12 @@ export const projectsApi = {
   get: (id: string) =>
     api<Project>(`/api/projects/${id}`),
 
-  create: (data: { name: string }) =>
+  create: (data: {
+    name: string;
+    pool_mode?: string;
+    max_client_conn?: number;
+    default_pool_size?: number;
+  }) =>
     api<Project>("/api/projects", { method: "POST", body: data }),
 
   delete: (id: string) =>
@@ -94,4 +111,13 @@ export const projectsApi = {
 
   update: (id: string, data: { name?: string }) =>
     api<Project>(`/api/projects/${id}`, { method: "PATCH", body: data }),
+
+  getPoolSettings: (id: string) =>
+    api<PoolSettings>(`/api/projects/${id}/pool`),
+
+  updatePoolSettings: (
+    id: string,
+    data: { pool_mode?: string; max_client_conn?: number; default_pool_size?: number }
+  ) =>
+    api<PoolSettings>(`/api/projects/${id}/pool`, { method: "PATCH", body: data }),
 };
