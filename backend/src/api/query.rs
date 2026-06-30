@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::db::models::Project;
+use crate::db::access::{Access, fetch_project_for};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -29,13 +29,7 @@ pub async fn query_ws_handler(
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     if project.status != "running" {
         return Err(AppError::BadRequest("Project is not running".into()));

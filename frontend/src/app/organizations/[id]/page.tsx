@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { organizationsApi, ApiError } from "@/lib/api";
+import { useAuth, apiWithRefresh } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,18 +22,31 @@ export default function OrganizationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const { isAuthenticated, isLoading: authLoading, loadUser } = useAuth();
   const [teamName, setTeamName] = useState("");
   const [teamError, setTeamError] = useState("");
   const [openDialog, setOpenDialog] = useState(false);
 
-  const { data: org, isLoading: orgLoading } = useQuery({
+  useEffect(() => {
+    if (!isAuthenticated && !authLoading) {
+      loadUser().catch(() => router.push("/login"));
+    }
+  }, [isAuthenticated, authLoading, loadUser, router]);
+
+  const {
+    data: org,
+    isLoading: orgLoading,
+    error: orgError,
+  } = useQuery({
     queryKey: ["organization", id],
-    queryFn: () => organizationsApi.get(id),
+    queryFn: () => apiWithRefresh(() => organizationsApi.get(id)),
+    enabled: isAuthenticated,
   });
 
   const { data: teams, isLoading: teamsLoading } = useQuery({
     queryKey: ["teams", id],
-    queryFn: () => organizationsApi.listTeams(id),
+    queryFn: () => apiWithRefresh(() => organizationsApi.listTeams(id)),
+    enabled: isAuthenticated,
   });
 
   const createTeam = useMutation({
@@ -52,7 +66,25 @@ export default function OrganizationDetailPage() {
     onSuccess: () => router.push("/organizations"),
   });
 
+  if (authLoading || !isAuthenticated) return null;
   if (orgLoading) return <p className="p-8 text-muted-foreground">読み込み中...</p>;
+  if (orgError) {
+    const status = orgError instanceof ApiError ? orgError.status : 0;
+    const message =
+      status === 403
+        ? "この組織へのアクセス権限がありません"
+        : status === 404
+          ? "組織が見つかりません"
+          : "組織の読み込みに失敗しました";
+    return (
+      <div className="p-8 space-y-4">
+        <p className="text-destructive">{message}</p>
+        <Link href="/organizations" className="text-sm text-muted-foreground hover:text-foreground">
+          ← 組織一覧へ戻る
+        </Link>
+      </div>
+    );
+  }
   if (!org) return <p className="p-8 text-destructive">組織が見つかりません</p>;
 
   return (

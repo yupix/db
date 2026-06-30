@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { organizationsApi, ApiError } from "@/lib/api";
+import { useAuth, apiWithRefresh } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -35,7 +36,15 @@ const roleColors: Record<string, string> = {
 
 export default function TeamDetailPage() {
   const { id: orgId, teamId } = useParams<{ id: string; teamId: string }>();
+  const router = useRouter();
   const qc = useQueryClient();
+  const { isAuthenticated, isLoading: authLoading, loadUser } = useAuth();
+
+  useEffect(() => {
+    if (!isAuthenticated && !authLoading) {
+      loadUser().catch(() => router.push("/login"));
+    }
+  }, [isAuthenticated, authLoading, loadUser, router]);
 
   // Members tab state
   const [memberEmail, setMemberEmail] = useState("");
@@ -53,22 +62,33 @@ export default function TeamDetailPage() {
 
   const { data: team } = useQuery({
     queryKey: ["team", orgId, teamId],
-    queryFn: () => organizationsApi.getTeam(orgId, teamId),
+    queryFn: () => apiWithRefresh(() => organizationsApi.getTeam(orgId, teamId)),
+    enabled: isAuthenticated,
   });
 
   const { data: members, isLoading: membersLoading } = useQuery({
     queryKey: ["members", orgId, teamId],
-    queryFn: () => organizationsApi.listMembers(orgId, teamId),
+    queryFn: () => apiWithRefresh(() => organizationsApi.listMembers(orgId, teamId)),
+    enabled: isAuthenticated,
   });
 
-  const { data: invitations, isLoading: invLoading } = useQuery({
+  const {
+    data: invitations,
+    isLoading: invLoading,
+    error: invErrorObj,
+  } = useQuery({
     queryKey: ["invitations", orgId, teamId],
-    queryFn: () => organizationsApi.listInvitations(orgId, teamId),
+    queryFn: () => apiWithRefresh(() => organizationsApi.listInvitations(orgId, teamId)),
+    enabled: isAuthenticated,
+    // Don't retry a 403 — viewers/developers simply can't manage invitations.
+    retry: (count, err) => !(err instanceof ApiError && err.status === 403) && count < 2,
   });
+  const invForbidden = invErrorObj instanceof ApiError && invErrorObj.status === 403;
 
   const { data: teamProjects, isLoading: projLoading } = useQuery({
     queryKey: ["teamProjects", orgId, teamId],
-    queryFn: () => organizationsApi.listTeamProjects(orgId, teamId),
+    queryFn: () => apiWithRefresh(() => organizationsApi.listTeamProjects(orgId, teamId)),
+    enabled: isAuthenticated,
   });
 
   const addMember = useMutation({
@@ -129,6 +149,8 @@ export default function TeamDetailPage() {
     mutationFn: (pid: string) => organizationsApi.unassignProject(orgId, teamId, pid),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["teamProjects", orgId, teamId] }),
   });
+
+  if (authLoading || !isAuthenticated) return null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -305,7 +327,13 @@ export default function TeamDetailPage() {
               </CardContent>
             </Card>
 
-            {invLoading ? (
+            {invForbidden ? (
+              <Card>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  招待を管理する権限がありません（owner / admin のみ）
+                </CardContent>
+              </Card>
+            ) : invLoading ? (
               <p className="text-muted-foreground">読み込み中...</p>
             ) : invitations && invitations.length > 0 ? (
               <div className="space-y-2">

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::jwt::Claims;
+use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Invitation, Organization, Team, TeamMember};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -146,6 +147,37 @@ fn can_manage_members(role: &str) -> bool {
     matches!(role, "owner" | "admin")
 }
 
+/// Privilege rank for role hierarchy comparisons. Higher = more privileged.
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 3,
+        "admin" => 2,
+        "developer" => 1,
+        _ => 0, // viewer / unknown
+    }
+}
+
+/// Whether `caller_role` may assign `new_role` to a member whose current role
+/// is `target_existing` (None when adding a brand-new member).
+///
+/// Rules:
+/// - `owner` may assign any role to anyone.
+/// - `admin` may only manage developer/viewer members and may only grant
+///   developer/viewer — never create or modify another admin/owner. This is
+///   what stops an admin from escalating itself (or anyone) to `owner`.
+fn can_assign_role(caller_role: &str, target_existing: Option<&str>, new_role: &str) -> bool {
+    if caller_role == "owner" {
+        return true;
+    }
+    if caller_role != "admin" {
+        return false;
+    }
+    // admin: cannot touch admin/owner members, cannot grant admin/owner.
+    let new_ok = role_rank(new_role) <= role_rank("developer");
+    let existing_ok = target_existing.is_none_or(|e| role_rank(e) <= role_rank("developer"));
+    new_ok && existing_ok
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -275,32 +307,41 @@ async fn create_org(
         slug
     };
 
-    let base_slug = slug.clone();
-    let mut attempt_slug = base_slug.clone();
+    // Attempt the INSERT and, on a slug-unique collision, bump a counter and
+    // retry. Doing the uniqueness check inside the INSERT (rather than a
+    // separate SELECT) closes the check-then-insert race between concurrent
+    // creates of the same name.
+    let base_slug = slug;
     let mut counter = 0u32;
-    loop {
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM organizations WHERE slug = $1",
+    let org = loop {
+        let attempt_slug = if counter == 0 {
+            base_slug.clone()
+        } else {
+            format!("{}-{}", base_slug, counter)
+        };
+
+        match sqlx::query_as::<_, Organization>(
+            "INSERT INTO organizations (name, slug, owner_id) VALUES ($1, $2, $3) RETURNING *",
         )
+        .bind(&req.name)
         .bind(&attempt_slug)
+        .bind(user_id)
         .fetch_one(&state.db)
-        .await?;
-
-        if count == 0 {
-            break;
+        .await
+        {
+            Ok(org) => break org,
+            Err(sqlx::Error::Database(db_err))
+                if db_err.constraint() == Some("organizations_slug_key") =>
+            {
+                counter += 1;
+                if counter > 1000 {
+                    return Err(AppError::Internal("Could not allocate org slug".into()));
+                }
+                continue;
+            }
+            Err(e) => return Err(AppError::Database(e)),
         }
-        counter += 1;
-        attempt_slug = format!("{}-{}", base_slug, counter);
-    }
-
-    let org = sqlx::query_as::<_, Organization>(
-        "INSERT INTO organizations (name, slug, owner_id) VALUES ($1, $2, $3) RETURNING *",
-    )
-    .bind(&req.name)
-    .bind(&attempt_slug)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await?;
+    };
 
     Ok(Json(OrgResponse::from(&org)))
 }
@@ -373,12 +414,10 @@ async fn list_teams(
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
-    let teams = sqlx::query_as::<_, Team>(
-        "SELECT * FROM teams WHERE org_id = $1 ORDER BY name",
-    )
-    .bind(org_id)
-    .fetch_all(&state.db)
-    .await?;
+    let teams = sqlx::query_as::<_, Team>("SELECT * FROM teams WHERE org_id = $1 ORDER BY name")
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?;
 
     Ok(Json(teams.iter().map(TeamResponse::from).collect()))
 }
@@ -401,21 +440,24 @@ async fn create_team(
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_owner(&state, org_id, user_id).await?;
 
-    let team = sqlx::query_as::<_, Team>(
-        "INSERT INTO teams (org_id, name) VALUES ($1, $2) RETURNING *",
-    )
-    .bind(org_id)
-    .bind(&req.name)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint().is_some_and(|c| c.contains("teams_org_id_name_key")) {
-                return AppError::Conflict("Team name already exists in this organization".into());
-            }
-        }
-        AppError::Database(e)
-    })?;
+    let team =
+        sqlx::query_as::<_, Team>("INSERT INTO teams (org_id, name) VALUES ($1, $2) RETURNING *")
+            .bind(org_id)
+            .bind(&req.name)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                if let sqlx::Error::Database(ref db_err) = e
+                    && db_err
+                        .constraint()
+                        .is_some_and(|c| c.contains("teams_org_id_name_key"))
+                {
+                    return AppError::Conflict(
+                        "Team name already exists in this organization".into(),
+                    );
+                }
+                AppError::Database(e)
+            })?;
 
     Ok(Json(TeamResponse::from(&team)))
 }
@@ -428,14 +470,12 @@ async fn get_team(
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
-    let team = sqlx::query_as::<_, Team>(
-        "SELECT * FROM teams WHERE id = $1 AND org_id = $2",
-    )
-    .bind(team_id)
-    .bind(org_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let team = sqlx::query_as::<_, Team>("SELECT * FROM teams WHERE id = $1 AND org_id = $2")
+        .bind(team_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     Ok(Json(TeamResponse::from(&team)))
 }
@@ -458,14 +498,12 @@ async fn update_team(
     }
 
     // Verify team belongs to org
-    let team = sqlx::query_as::<_, Team>(
-        "SELECT * FROM teams WHERE id = $1 AND org_id = $2",
-    )
-    .bind(team_id)
-    .bind(org_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let team = sqlx::query_as::<_, Team>("SELECT * FROM teams WHERE id = $1 AND org_id = $2")
+        .bind(team_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     if let Some(name) = &req.name {
         sqlx::query("UPDATE teams SET name = $1, updated_at = now() WHERE id = $2")
@@ -533,7 +571,13 @@ async fn list_members(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
     let rows = sqlx::query_as::<_, MemberRow>(
@@ -591,7 +635,13 @@ async fn add_member(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
     let role = req.role.unwrap_or_else(|| "developer".to_string());
@@ -601,13 +651,24 @@ async fn add_member(
         ));
     }
 
-    let target_user = sqlx::query_as::<_, crate::db::models::User>(
-        "SELECT * FROM users WHERE email = $1",
+    let target_user =
+        sqlx::query_as::<_, crate::db::models::User>("SELECT * FROM users WHERE email = $1")
+            .bind(&req.email)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    // Honor the role hierarchy: an admin must not create/modify an admin/owner.
+    let existing_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2",
     )
-    .bind(&req.email)
+    .bind(team_id)
+    .bind(target_user.id)
     .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound)?;
+    .await?;
+    if !can_assign_role(&role_str, existing_role.as_deref(), &role) {
+        return Err(AppError::Forbidden);
+    }
 
     let member = sqlx::query_as::<_, TeamMember>(
         "INSERT INTO team_members (team_id, user_id, role)
@@ -655,7 +716,22 @@ async fn update_member_role(
         ));
     }
 
-    let result = sqlx::query(
+    // Target must already be a member; honor the role hierarchy so an admin
+    // cannot modify an admin/owner or promote anyone to admin/owner.
+    let existing_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2",
+    )
+    .bind(team_id)
+    .bind(target_user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    if !can_assign_role(&role_str, Some(&existing_role), &req.role) {
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query(
         "UPDATE team_members SET role = $1, updated_at = now() WHERE team_id = $2 AND user_id = $3",
     )
     .bind(&req.role)
@@ -663,10 +739,6 @@ async fn update_member_role(
     .bind(target_user_id)
     .execute(&state.db)
     .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
 
     Ok(Json(serde_json::json!({ "updated": true })))
 }
@@ -682,16 +754,25 @@ async fn remove_member(
         return Err(AppError::Forbidden);
     }
 
-    let result =
-        sqlx::query("DELETE FROM team_members WHERE team_id = $1 AND user_id = $2")
-            .bind(team_id)
-            .bind(target_user_id)
-            .execute(&state.db)
-            .await?;
+    let existing_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2",
+    )
+    .bind(team_id)
+    .bind(target_user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound);
+    // An admin must not remove an admin/owner; only an owner can.
+    if !can_assign_role(&role_str, Some(&existing_role), &existing_role) {
+        return Err(AppError::Forbidden);
     }
+
+    sqlx::query("DELETE FROM team_members WHERE team_id = $1 AND user_id = $2")
+        .bind(team_id)
+        .bind(target_user_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -716,7 +797,13 @@ async fn list_invitations(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
     let invitations = sqlx::query_as::<_, Invitation>(
@@ -726,7 +813,9 @@ async fn list_invitations(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(invitations.iter().map(InvitationResponse::from).collect()))
+    Ok(Json(
+        invitations.iter().map(InvitationResponse::from).collect(),
+    ))
 }
 
 #[derive(Deserialize, Validate)]
@@ -756,7 +845,13 @@ async fn create_invitation(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
     let inv_role = req.role.unwrap_or_else(|| "developer".to_string());
@@ -764,6 +859,10 @@ async fn create_invitation(
         return Err(AppError::BadRequest(
             "role must be one of: owner, admin, developer, viewer".into(),
         ));
+    }
+    // An admin must not invite someone as admin/owner.
+    if !can_assign_role(&role, None, &inv_role) {
+        return Err(AppError::Forbidden);
     }
 
     // Expire any existing pending invitation for this email+team
@@ -804,13 +903,11 @@ async fn cancel_invitation(
         return Err(AppError::Forbidden);
     }
 
-    let result = sqlx::query(
-        "DELETE FROM invitations WHERE id = $1 AND team_id = $2",
-    )
-    .bind(inv_id)
-    .bind(team_id)
-    .execute(&state.db)
-    .await?;
+    let result = sqlx::query("DELETE FROM invitations WHERE id = $1 AND team_id = $2")
+        .bind(inv_id)
+        .bind(team_id)
+        .execute(&state.db)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
@@ -826,13 +923,11 @@ async fn accept_invitation(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let user = sqlx::query_as::<_, crate::db::models::User>(
-        "SELECT * FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::Unauthorized)?;
+    let user = sqlx::query_as::<_, crate::db::models::User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
 
     let invitation = sqlx::query_as::<_, Invitation>(
         "SELECT * FROM invitations WHERE token = $1 AND status = 'pending' AND expires_at > now()",
@@ -846,7 +941,22 @@ async fn accept_invitation(
         return Err(AppError::Forbidden);
     }
 
-    // Add to team
+    // Add to team. If the user is already a member with a higher role, keep it —
+    // accepting a stale/lower-role invitation must never downgrade an existing
+    // member (e.g. an owner accepting an old "viewer" invite).
+    let existing_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2",
+    )
+    .bind(invitation.team_id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let effective_role = match existing_role {
+        Some(e) if role_rank(&e) >= role_rank(&invitation.role) => e,
+        _ => invitation.role.clone(),
+    };
+
     sqlx::query(
         "INSERT INTO team_members (team_id, user_id, role)
          VALUES ($1, $2, $3)
@@ -854,19 +964,19 @@ async fn accept_invitation(
     )
     .bind(invitation.team_id)
     .bind(user_id)
-    .bind(&invitation.role)
+    .bind(&effective_role)
     .execute(&state.db)
     .await?;
 
     // Mark invitation as accepted
-    sqlx::query(
-        "UPDATE invitations SET status = 'accepted', updated_at = now() WHERE id = $1",
-    )
-    .bind(invitation.id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("UPDATE invitations SET status = 'accepted', updated_at = now() WHERE id = $1")
+        .bind(invitation.id)
+        .execute(&state.db)
+        .await?;
 
-    Ok(Json(serde_json::json!({ "accepted": true, "team_id": invitation.team_id })))
+    Ok(Json(
+        serde_json::json!({ "accepted": true, "team_id": invitation.team_id }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +1005,13 @@ async fn list_team_projects(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
     #[derive(sqlx::FromRow)]
@@ -953,21 +1069,18 @@ async fn assign_project(
         .bind(org_id)
         .fetch_one(&state.db)
         .await
-        .and_then(|c| if c > 0 { Ok(c) } else { Err(sqlx::Error::RowNotFound) })
+        .and_then(|c| {
+            if c > 0 {
+                Ok(c)
+            } else {
+                Err(sqlx::Error::RowNotFound)
+            }
+        })
         .map_err(|_| AppError::NotFound)?;
 
-    // Verify the project belongs to the caller or to the org
-    let proj_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM projects WHERE id = $1 AND user_id = $2 AND status != 'deleted'",
-    )
-    .bind(req.project_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await?;
-
-    if proj_count == 0 {
-        return Err(AppError::NotFound);
-    }
+    // The caller must have manage access to the project (direct owner, org
+    // owner, or an admin/owner of a team it is already assigned to).
+    fetch_project_for(&state.db, req.project_id, user_id, Access::Manage).await?;
 
     sqlx::query(
         "INSERT INTO project_teams (project_id, team_id) VALUES ($1, $2)

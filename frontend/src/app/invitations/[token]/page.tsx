@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { organizationsApi, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ export default function AcceptInvitationPage() {
   const router = useRouter();
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const hasRun = useRef(false);
 
   const accept = async () => {
     setStatus("loading");
@@ -28,7 +29,12 @@ export default function AcceptInvitationPage() {
   };
 
   useEffect(() => {
-    if (token) accept();
+    // Guard against React StrictMode double-invoke: accepting twice would make
+    // the second call hit an already-accepted invitation and flash a false error.
+    if (token && !hasRun.current) {
+      hasRun.current = true;
+      accept();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 

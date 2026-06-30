@@ -8,6 +8,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::jwt::Claims;
+use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Branch, Project};
 use crate::error::AppError;
 use crate::orchestrator::docker;
@@ -50,13 +51,7 @@ pub async fn list_branches(
 ) -> Result<Json<Vec<BranchResponse>>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let branches = sqlx::query_as::<_, Branch>(
         "SELECT * FROM branches WHERE project_id = $1 AND status != 'deleted' ORDER BY created_at",
@@ -91,13 +86,7 @@ pub async fn create_branch(
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     if project.status != "running" {
         return Err(AppError::BadRequest(
@@ -229,13 +218,7 @@ pub async fn get_branch(
 ) -> Result<Json<BranchResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let branch =
         sqlx::query_as::<_, Branch>("SELECT * FROM branches WHERE id = $1 AND project_id = $2")
@@ -255,13 +238,7 @@ pub async fn delete_branch(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let branch =
         sqlx::query_as::<_, Branch>("SELECT * FROM branches WHERE id = $1 AND project_id = $2")
@@ -306,13 +283,7 @@ pub async fn rename_branch(
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let _branch =
         sqlx::query_as::<_, Branch>("SELECT * FROM branches WHERE id = $1 AND project_id = $2")
@@ -345,13 +316,7 @@ pub async fn reset_branch(
 ) -> Result<Json<BranchResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let branch =
         sqlx::query_as::<_, Branch>("SELECT * FROM branches WHERE id = $1 AND project_id = $2")

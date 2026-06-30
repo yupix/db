@@ -9,6 +9,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::jwt::Claims;
+use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Project, ProjectEnvironment};
 use crate::error::AppError;
 use crate::orchestrator::docker;
@@ -109,8 +110,17 @@ async fn list_projects(
 ) -> Result<Json<Vec<ProjectResponse>>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
+    // Includes projects owned directly, plus any assigned to a team the user
+    // belongs to, plus projects assigned to a team in an org the user owns.
     let projects = sqlx::query_as::<_, Project>(
-        "SELECT * FROM projects WHERE user_id = $1 AND status != 'deleted' ORDER BY created_at DESC",
+        "SELECT DISTINCT p.* FROM projects p
+         LEFT JOIN project_teams pt ON pt.project_id = p.id
+         LEFT JOIN team_members tm ON tm.team_id = pt.team_id AND tm.user_id = $1
+         LEFT JOIN teams t ON t.id = pt.team_id
+         LEFT JOIN organizations o ON o.id = t.org_id AND o.owner_id = $1
+         WHERE p.status != 'deleted'
+           AND (p.user_id = $1 OR tm.user_id = $1 OR o.owner_id = $1)
+         ORDER BY p.created_at DESC",
     )
     .bind(user_id)
     .fetch_all(&state.db)
@@ -386,13 +396,7 @@ async fn get_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, id, user_id, Access::Read).await?;
 
     Ok(Json(ProjectResponse::from(&project, "localhost")))
 }
@@ -404,13 +408,7 @@ async fn delete_project(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(cid) = &project.container_id {
         let _ = docker::remove_container(&state.docker, cid).await;
@@ -437,13 +435,7 @@ async fn start_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(cid) = &project.container_id {
         docker::start_container(&state.docker, cid).await?;
@@ -472,13 +464,7 @@ async fn stop_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(pgb_cid) = &project.pgbouncer_container_id {
         let _ = docker::stop_container(&state.docker, pgb_cid).await;
@@ -513,13 +499,7 @@ async fn update_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(name) = &req.name {
         sqlx::query("UPDATE projects SET name = $1, updated_at = now() WHERE id = $2")
@@ -556,13 +536,7 @@ async fn get_pool_settings(
 ) -> Result<Json<PoolSettingsResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, id, user_id, Access::Read).await?;
 
     Ok(Json(PoolSettingsResponse {
         pool_mode: project.pool_mode,
@@ -587,13 +561,7 @@ async fn update_pool_settings(
 ) -> Result<Json<PoolSettingsResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(mode) = &req.pool_mode {
         if !matches!(mode.as_str(), "session" | "transaction" | "statement") {
@@ -744,13 +712,7 @@ async fn list_environments(
 ) -> Result<Json<Vec<EnvironmentResponse>>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let environments = sqlx::query_as::<_, ProjectEnvironment>(
         "SELECT * FROM project_environments WHERE project_id = $1 ORDER BY is_default DESC, name",
@@ -784,13 +746,7 @@ async fn create_environment(
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let endpoint_type = req.endpoint_type.unwrap_or_else(|| "direct".to_string());
     if !matches!(endpoint_type.as_str(), "direct" | "pooled") {
@@ -850,13 +806,7 @@ async fn get_environment(
 ) -> Result<Json<EnvironmentResponse>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let env = sqlx::query_as::<_, ProjectEnvironment>(
         "SELECT * FROM project_environments WHERE id = $1 AND project_id = $2",
@@ -877,13 +827,7 @@ async fn delete_environment(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let _project =
-        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = $1 AND user_id = $2")
-            .bind(project_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let result = sqlx::query("DELETE FROM project_environments WHERE id = $1 AND project_id = $2")
         .bind(env_id)
