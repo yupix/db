@@ -1,14 +1,116 @@
 use bollard::Docker;
 use bollard::container::{
     Config as ContainerConfig, CreateContainerOptions, InspectContainerOptions,
-    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
+    RemoveContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::models::{HealthConfig, HealthStatusEnum, HostConfig, PortBinding};
 use bollard::network::CreateNetworkOptions;
+use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::error::AppError;
+
+/// A one-shot snapshot of a container's resource usage, derived from the
+/// Docker stats API.
+#[derive(Debug, Clone, Default)]
+pub struct ContainerStats {
+    pub cpu_pct: f64,
+    pub mem_used_bytes: i64,
+    pub mem_limit_bytes: i64,
+    pub net_rx_bytes: i64,
+    pub net_tx_bytes: i64,
+    pub block_read_bytes: i64,
+    pub block_write_bytes: i64,
+}
+
+/// Fetch a single resource snapshot for a running container. CPU percent is
+/// computed from the delta between the current and previous cpu readings the
+/// Docker daemon includes in a one-shot stats response.
+pub async fn container_stats(
+    docker: &Docker,
+    container_id: &str,
+) -> Result<ContainerStats, AppError> {
+    let options = StatsOptions {
+        stream: false,
+        one_shot: false,
+    };
+
+    let stats = docker
+        .stats(container_id, Some(options))
+        .next()
+        .await
+        .ok_or_else(|| AppError::Internal("No stats returned for container".into()))??;
+
+    // CPU percentage: (container delta / system delta) * online cpus * 100.
+    let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64
+        - stats.precpu_stats.cpu_usage.total_usage as f64;
+    let system_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) as f64
+        - stats.precpu_stats.system_cpu_usage.unwrap_or(0) as f64;
+    let online_cpus = stats.cpu_stats.online_cpus.unwrap_or_else(|| {
+        stats
+            .cpu_stats
+            .cpu_usage
+            .percpu_usage
+            .as_ref()
+            .map(|v| v.len() as u64)
+            .unwrap_or(1)
+    }) as f64;
+    let cpu_pct = if system_delta > 0.0 && cpu_delta > 0.0 {
+        (cpu_delta / system_delta) * online_cpus * 100.0
+    } else {
+        0.0
+    };
+
+    let mem_used = stats.memory_stats.usage.unwrap_or(0);
+    // Subtract page cache when available — matches `docker stats` reporting.
+    let cache = stats
+        .memory_stats
+        .stats
+        .as_ref()
+        .and_then(|s| match s {
+            bollard::container::MemoryStatsStats::V1(v1) => Some(v1.cache),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let mem_used_bytes = mem_used.saturating_sub(cache) as i64;
+    let mem_limit_bytes = stats.memory_stats.limit.unwrap_or(0) as i64;
+
+    let (net_rx_bytes, net_tx_bytes) = stats
+        .networks
+        .as_ref()
+        .map(|nets| {
+            nets.values().fold((0u64, 0u64), |(rx, tx), n| {
+                (rx + n.rx_bytes, tx + n.tx_bytes)
+            })
+        })
+        .unwrap_or((0, 0));
+
+    let (block_read_bytes, block_write_bytes) = stats
+        .blkio_stats
+        .io_service_bytes_recursive
+        .as_ref()
+        .map(|entries| {
+            entries.iter().fold((0u64, 0u64), |(r, w), e| {
+                match e.op.to_lowercase().as_str() {
+                    "read" => (r + e.value, w),
+                    "write" => (r, w + e.value),
+                    _ => (r, w),
+                }
+            })
+        })
+        .unwrap_or((0, 0));
+
+    Ok(ContainerStats {
+        cpu_pct,
+        mem_used_bytes,
+        mem_limit_bytes,
+        net_rx_bytes: net_rx_bytes as i64,
+        net_tx_bytes: net_tx_bytes as i64,
+        block_read_bytes: block_read_bytes as i64,
+        block_write_bytes: block_write_bytes as i64,
+    })
+}
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);

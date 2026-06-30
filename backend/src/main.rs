@@ -10,6 +10,7 @@ mod auth;
 mod config;
 mod db;
 mod error;
+mod metrics;
 mod orchestrator;
 mod state;
 mod util;
@@ -46,6 +47,10 @@ async fn main() -> anyhow::Result<()> {
         docker,
         config: config.clone(),
     });
+
+    // Start background metrics collection (Docker stats → time-series + rollup).
+    metrics::spawn(state.clone());
+    tracing::info!("Metrics collector started");
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::mirror_request())

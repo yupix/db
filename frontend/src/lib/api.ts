@@ -200,6 +200,30 @@ export const organizationsApi = {
     api<{ deleted: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/projects/${projectId}`, { method: "DELETE" }),
 };
 
+export interface MetricPoint {
+  ts: string;
+  cpu_pct: number;
+  mem_used_bytes: number;
+  mem_limit_bytes: number;
+  net_rx_bytes: number;
+  net_tx_bytes: number;
+  block_read_bytes: number;
+  block_write_bytes: number;
+}
+
+export interface MetricsResponse {
+  range: string;
+  resolution: string;
+  points: MetricPoint[];
+}
+
+export type MetricsRange = "1h" | "6h" | "24h" | "7d" | "30d";
+
+export const metricsApi = {
+  get: (projectId: string, range: MetricsRange) =>
+    api<MetricsResponse>(`/api/projects/${projectId}/metrics?range=${range}`),
+};
+
 export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api<AuthResponse>("/api/auth/register", { method: "POST", body: data }),
