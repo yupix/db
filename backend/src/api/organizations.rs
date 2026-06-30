@@ -8,11 +8,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::auth::jwt::Claims;
+use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Invitation, Organization, Team, TeamMember};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::util::{random_string, slugify};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -147,6 +148,26 @@ fn can_manage_members(role: &str) -> bool {
     matches!(role, "owner" | "admin")
 }
 
+/// Ensure `team_id` belongs to `org_id`, returning `NotFound` otherwise. Used
+/// by handlers that take both ids in the path and must keep them consistent.
+async fn require_team_in_org(
+    state: &AppState,
+    org_id: Uuid,
+    team_id: Uuid,
+) -> Result<(), AppError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM teams WHERE id = $1 AND org_id = $2)",
+    )
+    .bind(team_id)
+    .bind(org_id)
+    .fetch_one(&state.db)
+    .await?;
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
 /// Privilege rank for role hierarchy comparisons. Higher = more privileged.
 fn role_rank(role: &str) -> u8 {
     match role {
@@ -266,10 +287,8 @@ impl InvitationResponse {
 
 async fn list_orgs(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<OrgResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let orgs = sqlx::query_as::<_, Organization>(
         "SELECT DISTINCT o.* FROM organizations o
          LEFT JOIN teams t ON t.org_id = o.id
@@ -292,15 +311,13 @@ struct CreateOrgRequest {
 
 async fn create_org(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Json(req): Json<CreateOrgRequest>,
 ) -> Result<Json<OrgResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
-    let slug = slugify_org(&req.name);
+    let slug = slugify(&req.name);
     let slug = if slug.is_empty() {
         format!("org-{}", &Uuid::new_v4().to_string().replace('-', "")[..8])
     } else {
@@ -348,10 +365,9 @@ async fn create_org(
 
 async fn get_org(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<OrgResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let org = require_org_member(&state, id, user_id).await?;
     Ok(Json(OrgResponse::from(&org)))
 }
@@ -363,11 +379,10 @@ struct UpdateOrgRequest {
 
 async fn update_org(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateOrgRequest>,
 ) -> Result<Json<OrgResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_owner(&state, id, user_id).await?;
 
     if let Some(name) = &req.name {
@@ -388,10 +403,9 @@ async fn update_org(
 
 async fn delete_org(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_owner(&state, id, user_id).await?;
 
     sqlx::query("DELETE FROM organizations WHERE id = $1")
@@ -408,10 +422,9 @@ async fn delete_org(
 
 async fn list_teams(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Vec<TeamResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
     let teams = sqlx::query_as::<_, Team>("SELECT * FROM teams WHERE org_id = $1 ORDER BY name")
@@ -430,14 +443,13 @@ struct CreateTeamRequest {
 
 async fn create_team(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(org_id): Path<Uuid>,
     Json(req): Json<CreateTeamRequest>,
 ) -> Result<Json<TeamResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_owner(&state, org_id, user_id).await?;
 
     let team =
@@ -464,10 +476,9 @@ async fn create_team(
 
 async fn get_team(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<TeamResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
     let team = sqlx::query_as::<_, Team>("SELECT * FROM teams WHERE id = $1 AND org_id = $2")
@@ -487,11 +498,10 @@ struct UpdateTeamRequest {
 
 async fn update_team(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateTeamRequest>,
 ) -> Result<Json<TeamResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
@@ -523,10 +533,9 @@ async fn update_team(
 
 async fn delete_team(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_owner(&state, org_id, user_id).await?;
 
     let result = sqlx::query("DELETE FROM teams WHERE id = $1 AND org_id = $2")
@@ -559,26 +568,13 @@ struct MemberRow {
 
 async fn list_members(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<MemberResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
     // Verify team belongs to org
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     let rows = sqlx::query_as::<_, MemberRow>(
         "SELECT tm.id, tm.team_id, tm.user_id, tm.role,
@@ -616,33 +612,20 @@ struct AddMemberRequest {
 
 async fn add_member(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<AddMemberRequest>,
 ) -> Result<Json<MemberResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let caller_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-    let role_str = require_team_member(&state, team_id, caller_id).await?;
+    let role_str = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role_str) {
         return Err(AppError::Forbidden);
     }
 
     // Verify team belongs to org
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     let role = req.role.unwrap_or_else(|| "developer".to_string());
     if !valid_role(&role) {
@@ -700,12 +683,11 @@ struct UpdateRoleRequest {
 
 async fn update_member_role(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((_org_id, team_id, target_user_id)): Path<(Uuid, Uuid, Uuid)>,
     Json(req): Json<UpdateRoleRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let caller_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-    let role_str = require_team_member(&state, team_id, caller_id).await?;
+    let role_str = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role_str) {
         return Err(AppError::Forbidden);
     }
@@ -745,11 +727,10 @@ async fn update_member_role(
 
 async fn remove_member(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((_org_id, team_id, target_user_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let caller_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-    let role_str = require_team_member(&state, team_id, caller_id).await?;
+    let role_str = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role_str) {
         return Err(AppError::Forbidden);
     }
@@ -783,28 +764,15 @@ async fn remove_member(
 
 async fn list_invitations(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<InvitationResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     let invitations = sqlx::query_as::<_, Invitation>(
         "SELECT * FROM invitations WHERE team_id = $1 AND status = 'pending' ORDER BY created_at DESC",
@@ -827,32 +795,19 @@ struct CreateInvitationRequest {
 
 async fn create_invitation(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<CreateInvitationRequest>,
 ) -> Result<Json<InvitationResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     let inv_role = req.role.unwrap_or_else(|| "developer".to_string());
     if !valid_role(&inv_role) {
@@ -875,7 +830,7 @@ async fn create_invitation(
     .execute(&state.db)
     .await?;
 
-    let token = generate_token();
+    let token = random_string(48);
 
     let invitation = sqlx::query_as::<_, Invitation>(
         "INSERT INTO invitations (team_id, email, role, token, invited_by)
@@ -894,10 +849,9 @@ async fn create_invitation(
 
 async fn cancel_invitation(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((_org_id, team_id, inv_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
@@ -918,11 +872,9 @@ async fn cancel_invitation(
 
 async fn accept_invitation(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(token): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let user = sqlx::query_as::<_, crate::db::models::User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(&state.db)
@@ -994,25 +946,12 @@ struct TeamProjectResponse {
 
 async fn list_team_projects(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<TeamProjectResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     require_org_member(&state, org_id, user_id).await?;
 
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -1054,29 +993,16 @@ struct AssignProjectRequest {
 
 async fn assign_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((org_id, team_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<AssignProjectRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-        .bind(team_id)
-        .bind(org_id)
-        .fetch_one(&state.db)
-        .await
-        .and_then(|c| {
-            if c > 0 {
-                Ok(c)
-            } else {
-                Err(sqlx::Error::RowNotFound)
-            }
-        })
-        .map_err(|_| AppError::NotFound)?;
+    require_team_in_org(&state, org_id, team_id).await?;
 
     // The caller must have manage access to the project (direct owner, org
     // owner, or an admin/owner of a team it is already assigned to).
@@ -1096,10 +1022,9 @@ async fn assign_project(
 
 async fn unassign_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((_org_id, team_id, project_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
     let role = require_team_member(&state, team_id, user_id).await?;
     if !can_manage_members(&role) {
         return Err(AppError::Forbidden);
@@ -1112,28 +1037,4 @@ async fn unassign_project(
         .await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
-}
-
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-fn slugify_org(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn generate_token() -> String {
-    use rand::Rng;
-    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut rng = rand::rng();
-    (0..48)
-        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
-        .collect()
 }

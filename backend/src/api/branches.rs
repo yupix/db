@@ -7,7 +7,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::auth::jwt::Claims;
+use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Branch, Project};
 use crate::error::AppError;
@@ -46,11 +46,9 @@ impl BranchResponse {
 
 pub async fn list_branches(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<Vec<BranchResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let branches = sqlx::query_as::<_, Branch>(
@@ -77,14 +75,12 @@ pub struct CreateBranchRequest {
 
 pub async fn create_branch(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(project_id): Path<Uuid>,
     Json(req): Json<CreateBranchRequest>,
 ) -> Result<Json<BranchResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
@@ -213,11 +209,9 @@ pub async fn create_branch(
 
 pub async fn get_branch(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, branch_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BranchResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let branch =
@@ -233,11 +227,9 @@ pub async fn get_branch(
 
 pub async fn delete_branch(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, branch_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let branch =
@@ -274,14 +266,12 @@ pub struct RenameBranchRequest {
 
 pub async fn rename_branch(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, branch_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<RenameBranchRequest>,
 ) -> Result<Json<BranchResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
@@ -311,11 +301,9 @@ pub async fn rename_branch(
 
 pub async fn reset_branch(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, branch_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BranchResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let branch =

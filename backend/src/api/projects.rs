@@ -8,12 +8,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::auth::jwt::Claims;
+use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
 use crate::db::models::{Project, ProjectEnvironment};
 use crate::error::AppError;
 use crate::orchestrator::docker;
 use crate::state::AppState;
+use crate::util::{random_string, slugify};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -106,10 +107,8 @@ impl ProjectResponse {
 
 async fn list_projects(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<ProjectResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     // Includes projects owned directly, plus any assigned to a team the user
     // belongs to, plus projects assigned to a team in an org the user owns.
     let projects = sqlx::query_as::<_, Project>(
@@ -145,13 +144,11 @@ struct CreateProjectRequest {
 
 async fn create_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let slug = {
         let s = slugify(&req.name);
@@ -191,7 +188,7 @@ async fn create_project(
             .take(8)
             .collect::<String>()
     );
-    let db_password = generate_password();
+    let db_password = random_string(24);
     let container_name = format!(
         "userpg-{}",
         Uuid::new_v4()
@@ -391,11 +388,9 @@ async fn create_project(
 
 async fn get_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ProjectResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, id, user_id, Access::Read).await?;
 
     Ok(Json(ProjectResponse::from(&project, "localhost")))
@@ -403,11 +398,9 @@ async fn get_project(
 
 async fn delete_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(cid) = &project.container_id {
@@ -430,11 +423,9 @@ async fn delete_project(
 
 async fn start_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ProjectResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(cid) = &project.container_id {
@@ -459,11 +450,9 @@ async fn start_project(
 
 async fn stop_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ProjectResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(pgb_cid) = &project.pgbouncer_container_id {
@@ -493,12 +482,10 @@ struct UpdateProjectRequest {
 
 async fn update_project(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(name) = &req.name {
@@ -531,11 +518,9 @@ struct PoolSettingsResponse {
 
 async fn get_pool_settings(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<PoolSettingsResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     let project = fetch_project_for(&state.db, id, user_id, Access::Read).await?;
 
     Ok(Json(PoolSettingsResponse {
@@ -555,12 +540,10 @@ struct UpdatePoolSettingsRequest {
 
 async fn update_pool_settings(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePoolSettingsRequest>,
 ) -> Result<Json<PoolSettingsResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, id, user_id, Access::Manage).await?;
 
     if let Some(mode) = &req.pool_mode {
@@ -707,11 +690,9 @@ impl EnvironmentResponse {
 
 async fn list_environments(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<Vec<EnvironmentResponse>>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let environments = sqlx::query_as::<_, ProjectEnvironment>(
@@ -737,14 +718,12 @@ struct CreateEnvironmentRequest {
 
 async fn create_environment(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path(project_id): Path<Uuid>,
     Json(req): Json<CreateEnvironmentRequest>,
 ) -> Result<Json<EnvironmentResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
@@ -801,11 +780,9 @@ async fn create_environment(
 
 async fn get_environment(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, env_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<EnvironmentResponse>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
 
     let env = sqlx::query_as::<_, ProjectEnvironment>(
@@ -822,11 +799,9 @@ async fn get_environment(
 
 async fn delete_environment(
     State(state): State<Arc<AppState>>,
-    claims: Claims,
+    AuthUser(user_id): AuthUser,
     Path((project_id, env_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-
     fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
 
     let result = sqlx::query("DELETE FROM project_environments WHERE id = $1 AND project_id = $2")
@@ -845,26 +820,6 @@ async fn delete_environment(
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
-
-fn slugify(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn generate_password() -> String {
-    use rand::Rng;
-    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut rng = rand::rng();
-    (0..24)
-        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
-        .collect()
-}
 
 async fn find_available_port(state: &AppState, exclude: &[i32]) -> Result<i32, AppError> {
     let used_ports: Vec<i32> =
@@ -895,57 +850,4 @@ async fn find_available_port(state: &AppState, exclude: &[i32]) -> Result<i32, A
         }
     }
     Ok(port)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_slugify_basic() {
-        assert_eq!(slugify("My Project"), "my-project");
-        assert_eq!(slugify("hello-world"), "hello-world");
-        assert_eq!(slugify("TestDB"), "testdb");
-    }
-
-    #[test]
-    fn test_slugify_special_chars() {
-        assert_eq!(slugify("My   Project!"), "my-project");
-        assert_eq!(slugify("hello@world#123"), "hello-world-123");
-        assert_eq!(slugify("  spaces  "), "spaces");
-    }
-
-    #[test]
-    fn test_slugify_consecutive_dashes() {
-        assert_eq!(slugify("a---b---c"), "a-b-c");
-    }
-
-    #[test]
-    fn test_slugify_empty() {
-        assert_eq!(slugify(""), "");
-    }
-
-    #[test]
-    fn test_slugify_japanese() {
-        assert_eq!(slugify("テスト"), "");
-    }
-
-    #[test]
-    fn test_generate_password_length() {
-        let pw = generate_password();
-        assert_eq!(pw.len(), 24);
-    }
-
-    #[test]
-    fn test_generate_password_unique() {
-        let pw1 = generate_password();
-        let pw2 = generate_password();
-        assert_ne!(pw1, pw2);
-    }
-
-    #[test]
-    fn test_generate_password_chars() {
-        let pw = generate_password();
-        assert!(pw.chars().all(|c| c.is_alphanumeric()));
-    }
 }

@@ -5,6 +5,7 @@ use axum::{
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -46,6 +47,24 @@ impl FromRequestParts<Arc<AppState>> for Claims {
             return Err(AppError::Unauthorized);
         }
         Ok(claims)
+    }
+}
+
+/// Extractor yielding the authenticated user's id, parsed from the access
+/// token's `sub`. Folds auth + UUID parsing into one place so handlers don't
+/// repeat `claims.sub.parse().map_err(...)`.
+pub struct AuthUser(pub Uuid);
+
+impl FromRequestParts<Arc<AppState>> for AuthUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let claims = Claims::from_request_parts(parts, state).await?;
+        let user_id = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+        Ok(AuthUser(user_id))
     }
 }
 

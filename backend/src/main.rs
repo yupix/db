@@ -12,6 +12,7 @@ mod db;
 mod error;
 mod orchestrator;
 mod state;
+mod util;
 
 use config::Config;
 use state::AppState;
