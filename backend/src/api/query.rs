@@ -1,6 +1,7 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::{Path, Query, State},
+    extract::{Path, State},
+    http::HeaderMap,
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
@@ -11,18 +12,18 @@ use crate::db::models::Project;
 use crate::error::AppError;
 use crate::state::AppState;
 
-#[derive(Deserialize)]
-pub struct WsAuthQuery {
-    token: String,
-}
+const ACCESS_TOKEN_COOKIE: &str = "access_token";
 
 pub async fn query_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<Uuid>,
-    Query(query): Query<WsAuthQuery>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let claims = crate::auth::jwt::verify(&query.token, &state.config.jwt_secret)?;
+    // Extract token from Cookie header (HttpOnly cookie)
+    let token = extract_cookie(&headers, ACCESS_TOKEN_COOKIE).ok_or(AppError::Unauthorized)?;
+
+    let claims = crate::auth::jwt::verify(&token, &state.config.jwt_secret)?;
     if claims.token_type != crate::auth::jwt::TokenType::Access {
         return Err(AppError::Unauthorized);
     }
@@ -50,6 +51,18 @@ pub async fn query_ws_handler(
     let db_password = project.db_password.clone();
 
     Ok(ws.on_upgrade(move |socket| handle_ws(socket, container_id, db_name, db_user, db_password)))
+}
+
+fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                let c = c.trim();
+                c.strip_prefix(&format!("{}=", name)).map(|s| s.to_string())
+            })
+        })
 }
 
 async fn handle_ws(
@@ -170,86 +183,129 @@ async fn execute_query_via_docker(
     db_password: &str,
     query: &str,
 ) -> Result<QueryResult, String> {
-    // Execute query via docker exec psql with JSON output
-    let psql_cmd = format!(
-        "PGPASSWORD={} psql -U {} -d {} -t -A -F '\\t' -c \"{}\"",
-        db_password,
-        db_user,
-        db_name,
-        query.replace('"', "\\\"")
-    );
-
-    let output = tokio::process::Command::new("docker")
-        .args(["exec", container_id, "sh", "-c", &psql_cmd])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute query: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Check if this was a SELECT query (has output) or a non-SELECT (DDL/DML)
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: None,
-        });
-    }
-
-    // For non-SELECT queries (INSERT/UPDATE/DELETE), psql with -t -A outputs rows affected
-    // We need a different approach: use psql with JSON output mode
-    // Actually, let's use a simpler approach: parse the output as TSV
-    let lines: Vec<&str> = trimmed.lines().collect();
-    if lines.is_empty() {
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: None,
-        });
-    }
-
-    // Try JSON output mode for better parsing
-    let json_cmd = format!(
-        "PGPASSWORD={} psql -U {} -d {} -t -A -c \"COPY ({}) TO STDOUT WITH CSV HEADER\"",
-        db_password,
-        db_user,
-        db_name,
-        query.replace('"', "\\\"").replace('\n', " ")
-    );
-
-    // For SELECT queries, use COPY ... TO STDOUT WITH CSV HEADER
-    // For other queries, just run them normally
-    let is_select = query.trim().to_uppercase().starts_with("SELECT")
-        || query.trim().to_uppercase().starts_with("WITH");
+    let is_select = {
+        let upper = query.trim().to_uppercase();
+        upper.starts_with("SELECT")
+            || upper.starts_with("WITH")
+            || upper.starts_with("EXPLAIN")
+            || upper.starts_with("SHOW")
+            || upper.starts_with("TABLE")
+    };
 
     if is_select {
-        let csv_output = tokio::process::Command::new("docker")
-            .args(["exec", container_id, "sh", "-c", &json_cmd])
-            .output()
-            .await
-            .map_err(|e| format!("Failed to execute query: {}", e))?;
+        // For SELECT/EXPLAIN: use COPY ... TO STDOUT WITH CSV HEADER via stdin
+        let wrapped = format!(
+            "COPY ({}) TO STDOUT WITH CSV HEADER",
+            query.trim().trim_end_matches(';')
+        );
 
-        if !csv_output.status.success() {
-            let stderr = String::from_utf8_lossy(&csv_output.stderr);
-            // Fallback: try regular psql output
-            return Err(stderr.to_string());
+        let mut child = tokio::process::Command::new("docker")
+            .args([
+                "exec",
+                "-i",
+                container_id,
+                "psql",
+                "-U",
+                db_user,
+                "-d",
+                db_name,
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+            ])
+            .env("PGPASSWORD", db_password)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start psql: {}", e))?;
+
+        {
+            use tokio::io::AsyncWriteExt;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(wrapped.as_bytes())
+                    .await
+                    .map_err(|e| format!("Failed to write query: {}", e))?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| format!("Failed to write newline: {}", e))?;
+            }
         }
 
-        let csv_text = String::from_utf8_lossy(&csv_output.stdout);
-        parse_csv(&csv_text)
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("Failed to wait for psql: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(stderr.trim().to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_csv(&stdout)
     } else {
-        // For non-SELECT, return the output as a message
-        let lines_affected = lines.first().and_then(|l| l.parse::<u64>().ok());
+        // For non-SELECT (INSERT/UPDATE/DELETE/DDL): execute via stdin
+        let mut child = tokio::process::Command::new("docker")
+            .args([
+                "exec",
+                "-i",
+                container_id,
+                "psql",
+                "-U",
+                db_user,
+                "-d",
+                db_name,
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+            ])
+            .env("PGPASSWORD", db_password)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start psql: {}", e))?;
+
+        {
+            use tokio::io::AsyncWriteExt;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(query.trim().as_bytes())
+                    .await
+                    .map_err(|e| format!("Failed to write query: {}", e))?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| format!("Failed to write newline: {}", e))?;
+            }
+        }
+
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("Failed to wait for psql: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(stderr.trim().to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let trimmed = stdout.trim();
+
+        // Try to extract rows affected from output (e.g., "INSERT 0 1")
+        let rows_affected = trimmed
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<u64>().ok());
+
         Ok(QueryResult {
-            columns: vec!["result".to_string()],
-            rows: vec![vec![serde_json::Value::String(stdout.trim().to_string())]],
-            rows_affected: lines_affected,
+            columns: vec![],
+            rows: vec![],
+            rows_affected,
         })
     }
 }

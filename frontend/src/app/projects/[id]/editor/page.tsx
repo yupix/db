@@ -71,13 +71,7 @@ export default function SqlEditorPage() {
 
   const connectWs = useCallback(() => {
     return new Promise<WebSocket>((resolve, reject) => {
-      const token = typeof window !== "undefined" ? getCookie("access_token") : null;
-      if (!token) {
-        reject(new Error("Not authenticated"));
-        return;
-      }
-
-      const wsUrl = `${API_URL.replace("http", "ws")}/api/projects/${id}/query?token=${token}`;
+      const wsUrl = `${API_URL.replace("http", "ws")}/api/projects/${id}/query`;
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => resolve(ws);
@@ -88,8 +82,9 @@ export default function SqlEditorPage() {
     });
   }, [id]);
 
-  const executeQuery = async () => {
-    if (!query.trim() || isExecuting) return;
+  const executeQuery = async (overrideQuery?: string) => {
+    const sql = overrideQuery ?? query;
+    if (!sql.trim() || isExecuting) return;
     setIsExecuting(true);
     setResult(null);
 
@@ -117,12 +112,12 @@ export default function SqlEditorPage() {
         };
 
         ws!.addEventListener("message", handler);
-        ws!.send(JSON.stringify({ query }));
+        ws!.send(JSON.stringify({ query: sql }));
       });
 
       const res = await responsePromise;
       setResult(res);
-      saveToHistory(query, res.success);
+      saveToHistory(sql, res.success);
 
       if (!res.success) {
         setActiveTab("results");
@@ -142,8 +137,9 @@ export default function SqlEditorPage() {
   };
 
   const runExplain = () => {
-    setQuery((q) => `EXPLAIN ANALYZE ${q.replace(/^EXPLAIN\s+(ANALYZE\s+)?/i, "")}`);
-    setTimeout(() => executeQuery(), 100);
+    const explainSql = `EXPLAIN ANALYZE ${query.replace(/^EXPLAIN\s+(ANALYZE\s+)?/i, "")}`;
+    setQuery(explainSql);
+    executeQuery(explainSql);
   };
 
   const runFromHistory = (q: string) => {
@@ -187,7 +183,7 @@ export default function SqlEditorPage() {
             <Button variant="outline" size="sm" onClick={runExplain} disabled={isExecuting}>
               EXPLAIN ANALYZE
             </Button>
-            <Button size="sm" onClick={executeQuery} disabled={isExecuting || !query.trim()}>
+            <Button size="sm" onClick={() => executeQuery()} disabled={isExecuting || !query.trim()}>
               {isExecuting ? "実行中..." : "実行 (Ctrl+Enter)"}
             </Button>
           </div>
@@ -393,15 +389,4 @@ function HistoryView({
       ))}
     </div>
   );
-}
-
-function getCookie(name: string): string | null {
-  const cookies = document.cookie.split(";");
-  for (const cookie of cookies) {
-    const [key, value] = cookie.trim().split("=");
-    if (key === name) {
-      return value;
-    }
-  }
-  return null;
 }
