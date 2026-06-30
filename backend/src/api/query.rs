@@ -20,7 +20,6 @@ pub async fn query_ws_handler(
     Path(project_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    // Extract token from Cookie header (HttpOnly cookie)
     let token = extract_cookie(&headers, ACCESS_TOKEN_COOKIE).ok_or(AppError::Unauthorized)?;
 
     let claims = crate::auth::jwt::verify(&token, &state.config.jwt_secret)?;
@@ -80,10 +79,7 @@ async fn handle_ws(
     while let Some(msg) = socket.recv().await {
         let msg = match msg {
             Ok(Message::Text(text)) => text,
-            Ok(Message::Close(_)) => {
-                tracing::info!("WebSocket query connection closed");
-                break;
-            }
+            Ok(Message::Close(_)) => break,
             _ => continue,
         };
 
@@ -107,7 +103,6 @@ async fn handle_ws(
         };
 
         let start = std::time::Instant::now();
-
         let result = execute_query_via_docker(
             &container_id,
             &db_name,
@@ -116,7 +111,6 @@ async fn handle_ws(
             &request.query,
         )
         .await;
-
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
         let response = match result {
@@ -176,6 +170,28 @@ struct QueryResult {
     rows_affected: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum QueryKind {
+    Select,
+    Explain,
+    Mutation,
+}
+
+fn classify_query(query: &str) -> QueryKind {
+    let upper = query.trim().to_uppercase();
+    if upper.starts_with("EXPLAIN") || upper.starts_with("SHOW") || upper.starts_with("TABLE") {
+        QueryKind::Explain
+    } else if upper.starts_with("SELECT")
+        || upper.starts_with("WITH")
+        || upper.starts_with("VALUES")
+        || upper.starts_with("TABLE")
+    {
+        QueryKind::Select
+    } else {
+        QueryKind::Mutation
+    }
+}
+
 async fn execute_query_via_docker(
     container_id: &str,
     db_name: &str,
@@ -183,155 +199,176 @@ async fn execute_query_via_docker(
     db_password: &str,
     query: &str,
 ) -> Result<QueryResult, String> {
-    let is_select = {
-        let upper = query.trim().to_uppercase();
-        upper.starts_with("SELECT")
-            || upper.starts_with("WITH")
-            || upper.starts_with("EXPLAIN")
-            || upper.starts_with("SHOW")
-            || upper.starts_with("TABLE")
-    };
+    let kind = classify_query(query);
 
-    if is_select {
-        // For SELECT/EXPLAIN: use COPY ... TO STDOUT WITH CSV HEADER via stdin
-        let wrapped = format!(
-            "COPY ({}) TO STDOUT WITH CSV HEADER",
-            query.trim().trim_end_matches(';')
-        );
+    match kind {
+        QueryKind::Select => {
+            // SELECT/CTE: use COPY ... TO STDOUT WITH CSV HEADER for structured output
+            let wrapped = format!(
+                "COPY ({}) TO STDOUT WITH CSV HEADER",
+                query.trim().trim_end_matches(';')
+            );
+            let output =
+                run_psql_stdin(container_id, db_user, db_name, db_password, &wrapped).await?;
 
-        let mut child = tokio::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container_id,
-                "psql",
-                "-U",
-                db_user,
-                "-d",
-                db_name,
-                "-q",
-                "-v",
-                "ON_ERROR_STOP=1",
-            ])
-            .env("PGPASSWORD", db_password)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start psql: {}", e))?;
-
-        {
-            use tokio::io::AsyncWriteExt;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(wrapped.as_bytes())
-                    .await
-                    .map_err(|e| format!("Failed to write query: {}", e))?;
-                stdin
-                    .write_all(b"\n")
-                    .await
-                    .map_err(|e| format!("Failed to write newline: {}", e))?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
             }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            parse_csv_output(&stdout)
         }
+        QueryKind::Explain => {
+            // EXPLAIN/SHOW/TABLE: run via stdin, return as text rows
+            let output = run_psql_stdin(container_id, db_user, db_name, db_password, query).await?;
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| format!("Failed to wait for psql: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(stderr.trim().to_string());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_csv(&stdout)
-    } else {
-        // For non-SELECT (INSERT/UPDATE/DELETE/DDL): execute via stdin
-        let mut child = tokio::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container_id,
-                "psql",
-                "-U",
-                db_user,
-                "-d",
-                db_name,
-                "-q",
-                "-v",
-                "ON_ERROR_STOP=1",
-            ])
-            .env("PGPASSWORD", db_password)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start psql: {}", e))?;
-
-        {
-            use tokio::io::AsyncWriteExt;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(query.trim().as_bytes())
-                    .await
-                    .map_err(|e| format!("Failed to write query: {}", e))?;
-                stdin
-                    .write_all(b"\n")
-                    .await
-                    .map_err(|e| format!("Failed to write newline: {}", e))?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
             }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+
+            if lines.is_empty() {
+                return Ok(QueryResult {
+                    columns: vec![],
+                    rows: vec![],
+                    rows_affected: None,
+                });
+            }
+
+            // Return as single-column "result" table
+            Ok(QueryResult {
+                columns: vec!["Query Plan".to_string()],
+                rows: lines
+                    .into_iter()
+                    .map(|line| vec![serde_json::Value::String(line.to_string())])
+                    .collect(),
+                rows_affected: None,
+            })
         }
+        QueryKind::Mutation => {
+            // INSERT/UPDATE/DELETE/DDL: run via stdin, parse rows affected
+            let output = run_psql_stdin(container_id, db_user, db_name, db_password, query).await?;
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| format!("Failed to wait for psql: {}", e))?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(stderr.trim().to_string());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let trimmed = stdout.trim();
+
+            let rows_affected = parse_rows_affected(trimmed);
+
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                rows_affected,
+            })
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let trimmed = stdout.trim();
-
-        // Try to extract rows affected from output (e.g., "INSERT 0 1")
-        let rows_affected = trimmed
-            .split_whitespace()
-            .nth(1)
-            .and_then(|v| v.parse::<u64>().ok());
-
-        Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected,
-        })
     }
 }
 
-fn parse_csv(csv: &str) -> Result<QueryResult, String> {
-    let mut lines = csv.lines();
-    let header_line = lines.next().ok_or("Empty CSV output")?;
+async fn run_psql_stdin(
+    container_id: &str,
+    db_user: &str,
+    db_name: &str,
+    db_password: &str,
+    sql: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            container_id,
+            "psql",
+            "-U",
+            db_user,
+            "-d",
+            db_name,
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+        ])
+        .env("PGPASSWORD", db_password)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start psql: {}", e))?;
 
-    let columns: Vec<String> = parse_csv_line(header_line);
+    {
+        use tokio::io::AsyncWriteExt;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(sql.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write query: {}", e))?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .map_err(|e| format!("Failed to write newline: {}", e))?;
+        }
+    }
+
+    child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Failed to wait for psql: {}", e))
+}
+
+fn parse_rows_affected(output: &str) -> Option<u64> {
+    // psql outputs lines like "INSERT 0 1", "UPDATE 5", "DELETE 3", "CREATE TABLE"
+    // For INSERT: format is "INSERT <oid> <count>", we want the last number
+    // For UPDATE/DELETE: format is "UPDATE <count>" or "DELETE <count>"
+    // For DDL: no number, return None
+    let line = output.lines().next()?;
+    let parts: Vec<&str> = line.split_whitespace().collect();
+
+    // Try to find the last numeric field
+    for part in parts.iter().rev() {
+        if let Ok(n) = part.parse::<u64>() {
+            return Some(n);
+        }
+    }
+
+    None
+}
+
+fn parse_csv_output(csv: &str) -> Result<QueryResult, String> {
+    if csv.trim().is_empty() {
+        return Ok(QueryResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: None,
+        });
+    }
+
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(csv.as_bytes());
+
+    let columns: Vec<String> = reader
+        .headers()
+        .map_err(|e| format!("Failed to parse CSV headers: {}", e))?
+        .iter()
+        .map(|h| h.to_string())
+        .collect();
 
     let mut rows = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let values: Vec<serde_json::Value> = parse_csv_line(line)
-            .into_iter()
-            .map(|v| {
-                if v.is_empty() || v.eq_ignore_ascii_case("null") {
+    for result in reader.records() {
+        let record = result.map_err(|e| format!("Failed to parse CSV row: {}", e))?;
+        let row: Vec<serde_json::Value> = record
+            .iter()
+            .map(|field| {
+                if field.is_empty() || field.eq_ignore_ascii_case("null") {
                     serde_json::Value::Null
                 } else {
-                    serde_json::Value::String(v)
+                    serde_json::Value::String(field.to_string())
                 }
             })
             .collect();
-        rows.push(values);
+        rows.push(row);
     }
 
     Ok(QueryResult {
@@ -339,25 +376,4 @@ fn parse_csv(csv: &str) -> Result<QueryResult, String> {
         rows,
         rows_affected: None,
     })
-}
-
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-
-    for c in line.chars() {
-        match c {
-            '"' if in_quotes => in_quotes = false,
-            '"' => in_quotes = true,
-            ',' if !in_quotes => {
-                result.push(current.clone());
-                current.clear();
-            }
-            _ => current.push(c),
-        }
-    }
-    result.push(current);
-
-    result
 }
