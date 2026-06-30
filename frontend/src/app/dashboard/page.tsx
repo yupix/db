@@ -44,6 +44,16 @@ export default function DashboardPage() {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex gap-4 border-b w-full pb-4">
+            <Link href="/dashboard" className="text-sm font-medium border-b-2 border-foreground pb-1">
+              プロジェクト
+            </Link>
+            <Link href="/organizations" className="text-sm font-medium text-muted-foreground hover:text-foreground">
+              組織 / チーム
+            </Link>
+          </div>
+        </div>
         <div className="flex items-center justify-between mb-8">
           <h2 className="text-xl font-semibold">プロジェクト</h2>
           <Link href="/projects/new">

@@ -4,6 +4,53 @@ use uuid::Uuid;
 
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
+pub struct Organization {
+    pub id: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub owner_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct Team {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct TeamMember {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub user_id: Uuid,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct Invitation {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub token: String,
+    pub status: String,
+    pub invited_by: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct User {
     pub id: Uuid,
     pub email: String,

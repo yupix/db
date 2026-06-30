@@ -255,10 +255,10 @@ CREATE TABLE projects (
 - [x] 5.5 実行計画（EXPLAIN）表示
 
 ### Phase 6: チーム & 権限 👥
-- [ ] 6.1 organizations, teams, members, roles テーブル
-- [ ] 6.2 RBAC: owner / admin / developer / viewer
-- [ ] 6.3 プロジェクトへのチーム割当
-- [ ] 6.4 招待フロー
+- [x] 6.1 organizations, teams, members, roles テーブル
+- [x] 6.2 RBAC: owner / admin / developer / viewer
+- [x] 6.3 プロジェクトへのチーム割当
+- [x] 6.4 招待フロー
 
 ### Phase 7: メトリクス & モニタリング 📊
 - [ ] 7.1 `pg_stat_statements` 拡張でクエリ統計
@@ -301,6 +301,6 @@ docker compose up -d
 | Phase 3: プール | ✅ 完了 |
 | Phase 4: ブランチ | ✅ 完了 |
 | Phase 5: SQLエディタ | ✅ 完了 |
-| Phase 6: チーム | 未開始 |
+| Phase 6: チーム | ✅ 完了 |
 | Phase 7: メトリクス | 未開始 |
 | Phase 8: バックアップ | 未開始 |

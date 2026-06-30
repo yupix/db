@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/health", get(api::health::health))
         .nest("/api/auth", api::auth::router())
+        .nest("/api/organizations", api::organizations::router())
         .nest("/api/projects", api::projects::router())
         .route(
             "/api/projects/{id}/query",

@@ -91,6 +91,115 @@ export interface Branch {
   created_at: string;
 }
 
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  owner_id: string;
+  created_at: string;
+}
+
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface TeamMember {
+  id: string;
+  team_id: string;
+  user_id: string;
+  role: string;
+  email: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Invitation {
+  id: string;
+  team_id: string;
+  email: string;
+  role: string;
+  token: string;
+  status: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface TeamProject {
+  project_id: string;
+  team_id: string;
+  name: string;
+  slug: string;
+  status: string;
+}
+
+export const organizationsApi = {
+  list: () =>
+    api<Organization[]>("/api/organizations"),
+
+  get: (id: string) =>
+    api<Organization>(`/api/organizations/${id}`),
+
+  create: (data: { name: string }) =>
+    api<Organization>("/api/organizations", { method: "POST", body: data }),
+
+  update: (id: string, data: { name?: string }) =>
+    api<Organization>(`/api/organizations/${id}`, { method: "PATCH", body: data }),
+
+  delete: (id: string) =>
+    api<{ deleted: boolean }>(`/api/organizations/${id}`, { method: "DELETE" }),
+
+  listTeams: (orgId: string) =>
+    api<Team[]>(`/api/organizations/${orgId}/teams`),
+
+  createTeam: (orgId: string, data: { name: string }) =>
+    api<Team>(`/api/organizations/${orgId}/teams`, { method: "POST", body: data }),
+
+  getTeam: (orgId: string, teamId: string) =>
+    api<Team>(`/api/organizations/${orgId}/teams/${teamId}`),
+
+  updateTeam: (orgId: string, teamId: string, data: { name?: string }) =>
+    api<Team>(`/api/organizations/${orgId}/teams/${teamId}`, { method: "PATCH", body: data }),
+
+  deleteTeam: (orgId: string, teamId: string) =>
+    api<{ deleted: boolean }>(`/api/organizations/${orgId}/teams/${teamId}`, { method: "DELETE" }),
+
+  listMembers: (orgId: string, teamId: string) =>
+    api<TeamMember[]>(`/api/organizations/${orgId}/teams/${teamId}/members`),
+
+  addMember: (orgId: string, teamId: string, data: { email: string; role?: string }) =>
+    api<TeamMember>(`/api/organizations/${orgId}/teams/${teamId}/members`, { method: "POST", body: data }),
+
+  updateMemberRole: (orgId: string, teamId: string, userId: string, data: { role: string }) =>
+    api<{ updated: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/members/${userId}`, { method: "PATCH", body: data }),
+
+  removeMember: (orgId: string, teamId: string, userId: string) =>
+    api<{ deleted: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/members/${userId}`, { method: "DELETE" }),
+
+  listInvitations: (orgId: string, teamId: string) =>
+    api<Invitation[]>(`/api/organizations/${orgId}/teams/${teamId}/invitations`),
+
+  createInvitation: (orgId: string, teamId: string, data: { email: string; role?: string }) =>
+    api<Invitation>(`/api/organizations/${orgId}/teams/${teamId}/invitations`, { method: "POST", body: data }),
+
+  cancelInvitation: (orgId: string, teamId: string, invId: string) =>
+    api<{ deleted: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/invitations/${invId}`, { method: "DELETE" }),
+
+  acceptInvitation: (token: string) =>
+    api<{ accepted: boolean; team_id: string }>(`/api/organizations/invitations/${token}/accept`, { method: "POST" }),
+
+  listTeamProjects: (orgId: string, teamId: string) =>
+    api<TeamProject[]>(`/api/organizations/${orgId}/teams/${teamId}/projects`),
+
+  assignProject: (orgId: string, teamId: string, projectId: string) =>
+    api<{ assigned: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/projects`, { method: "POST", body: { project_id: projectId } }),
+
+  unassignProject: (orgId: string, teamId: string, projectId: string) =>
+    api<{ deleted: boolean }>(`/api/organizations/${orgId}/teams/${teamId}/projects/${projectId}`, { method: "DELETE" }),
+};
+
 export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api<AuthResponse>("/api/auth/register", { method: "POST", body: data }),
