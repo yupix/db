@@ -47,6 +47,55 @@ interface ChartRow {
   netTxMb: number;
 }
 
+type SeriesKey = Exclude<keyof ChartRow, "label">;
+
+interface Series {
+  key: SeriesKey;
+  name: string;
+  color: string;
+  dashed?: boolean;
+  width?: number;
+}
+
+/// One titled line chart. Shared by the CPU / memory / network sections so the
+/// ResponsiveContainer + axes + grid setup lives in a single place.
+function MetricChart({
+  title,
+  rows,
+  series,
+}: {
+  title: string;
+  rows: ChartRow[];
+  series: Series[];
+}) {
+  return (
+    <div>
+      <p className="text-xs font-medium mb-2">{title}</p>
+      <ResponsiveContainer width="100%" height={160}>
+        <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
+          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
+          <YAxis tick={{ fontSize: 11 }} domain={[0, "auto"]} />
+          <Tooltip />
+          {series.map((s) => (
+            <Line
+              key={s.key}
+              type="monotone"
+              dataKey={s.key}
+              name={s.name}
+              stroke={s.color}
+              strokeDasharray={s.dashed ? "4 4" : undefined}
+              dot={false}
+              strokeWidth={s.width ?? 2}
+              isAnimationActive={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export function MetricsCard({ projectId, running }: { projectId: string; running: boolean }) {
   const [range, setRange] = useState<MetricsRange>("1h");
 
@@ -68,6 +117,7 @@ export function MetricsCard({ projectId, running }: { projectId: string; running
   }));
 
   const latest = data?.points.at(-1);
+  const hasMemLimit = rows.some((r) => r.memLimitMb > 0);
 
   return (
     <Card>
@@ -122,7 +172,8 @@ export function MetricsCard({ projectId, running }: { projectId: string; running
                   <p className="text-lg font-semibold">
                     {formatBytes(latest.mem_used_bytes)}
                     <span className="text-xs text-muted-foreground font-normal">
-                      {" "}/ {formatBytes(latest.mem_limit_bytes)}
+                      {" "}
+                      / {latest.mem_limit_bytes > 0 ? formatBytes(latest.mem_limit_bytes) : "無制限"}
                     </span>
                   </p>
                 </div>
@@ -135,90 +186,40 @@ export function MetricsCard({ projectId, running }: { projectId: string; running
               </div>
             )}
 
-            {/* CPU chart */}
-            <div>
-              <p className="text-xs font-medium mb-2">CPU 使用率 (%)</p>
-              <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
-                  <YAxis tick={{ fontSize: 11 }} domain={[0, "auto"]} />
-                  <Tooltip />
-                  <Line
-                    type="monotone"
-                    dataKey="cpu"
-                    name="CPU %"
-                    stroke="#22c55e"
-                    dot={false}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <MetricChart
+              title="CPU 使用率 (%)"
+              rows={rows}
+              series={[{ key: "cpu", name: "CPU %", color: "#22c55e" }]}
+            />
 
-            {/* Memory chart */}
-            <div>
-              <p className="text-xs font-medium mb-2">メモリ (MB)</p>
-              <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
-                  <YAxis tick={{ fontSize: 11 }} domain={[0, "auto"]} />
-                  <Tooltip />
-                  <Line
-                    type="monotone"
-                    dataKey="memUsedMb"
-                    name="使用"
-                    stroke="#3b82f6"
-                    dot={false}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="memLimitMb"
-                    name="上限"
-                    stroke="#94a3b8"
-                    strokeDasharray="4 4"
-                    dot={false}
-                    strokeWidth={1}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <MetricChart
+              title="メモリ (MB)"
+              rows={rows}
+              series={[
+                { key: "memUsedMb", name: "使用", color: "#3b82f6" },
+                // Only draw the limit line when a limit is actually reported.
+                ...(hasMemLimit
+                  ? [
+                      {
+                        key: "memLimitMb" as const,
+                        name: "上限",
+                        color: "#94a3b8",
+                        dashed: true,
+                        width: 1,
+                      },
+                    ]
+                  : []),
+              ]}
+            />
 
-            {/* Network chart */}
-            <div>
-              <p className="text-xs font-medium mb-2">ネットワーク累計 (MB)</p>
-              <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
-                  <YAxis tick={{ fontSize: 11 }} domain={[0, "auto"]} />
-                  <Tooltip />
-                  <Line
-                    type="monotone"
-                    dataKey="netRxMb"
-                    name="受信"
-                    stroke="#a855f7"
-                    dot={false}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="netTxMb"
-                    name="送信"
-                    stroke="#f97316"
-                    dot={false}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <MetricChart
+              title="ネットワーク累計 (MB)"
+              rows={rows}
+              series={[
+                { key: "netRxMb", name: "受信", color: "#a855f7" },
+                { key: "netTxMb", name: "送信", color: "#f97316" },
+              ]}
+            />
           </>
         )}
       </CardContent>

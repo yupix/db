@@ -31,6 +31,10 @@ pub async fn container_stats(
     docker: &Docker,
     container_id: &str,
 ) -> Result<ContainerStats, AppError> {
+    // one_shot must be false: with one_shot=true the daemon returns immediately
+    // and leaves precpu_stats zeroed, which would make the CPU delta (and thus
+    // cpu_pct) always read ~0. false makes it do the two-read cycle server-side
+    // so precpu_stats is populated. stream=false still yields a single frame.
     let options = StatsOptions {
         stream: false,
         one_shot: false,
@@ -63,14 +67,16 @@ pub async fn container_stats(
     };
 
     let mem_used = stats.memory_stats.usage.unwrap_or(0);
-    // Subtract page cache when available — matches `docker stats` reporting.
+    // Subtract reclaimable page cache to match `docker stats` reporting. cgroup
+    // v1 exposes this as `cache`; cgroup v2 (modern default) as `inactive_file`.
+    // Without handling v2, memory would be over-reported on most hosts.
     let cache = stats
         .memory_stats
         .stats
         .as_ref()
-        .and_then(|s| match s {
-            bollard::container::MemoryStatsStats::V1(v1) => Some(v1.cache),
-            _ => None,
+        .map(|s| match s {
+            bollard::container::MemoryStatsStats::V1(v1) => v1.cache,
+            bollard::container::MemoryStatsStats::V2(v2) => v2.inactive_file,
         })
         .unwrap_or(0);
     let mem_used_bytes = mem_used.saturating_sub(cache) as i64;

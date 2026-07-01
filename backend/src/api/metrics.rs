@@ -63,55 +63,44 @@ pub async fn get_metrics(
     let (interval, use_rollup) =
         resolve_range(&range).ok_or_else(|| AppError::BadRequest("invalid range".into()))?;
 
-    let points = if use_rollup {
-        let rows = sqlx::query_as::<_, RollupRow>(&format!(
-            "SELECT bucket, cpu_pct_avg, mem_used_avg, mem_limit_bytes,
-                    net_rx_bytes, net_tx_bytes, block_read_bytes, block_write_bytes
+    // The rollup table's columns are aliased to match `MetricRow` so a single
+    // struct and mapping serve both the raw and rollup paths. Interval literals
+    // come from the fixed `resolve_range` whitelist — never user input.
+    let sql = if use_rollup {
+        format!(
+            "SELECT bucket AS ts, cpu_pct_avg AS cpu_pct, mem_used_avg AS mem_used_bytes,
+                    mem_limit_bytes, net_rx_bytes, net_tx_bytes,
+                    block_read_bytes, block_write_bytes
              FROM project_metrics_rollup
              WHERE project_id = $1 AND bucket >= now() - interval '{interval}'
              ORDER BY bucket"
-        ))
-        .bind(project_id)
-        .fetch_all(&state.db)
-        .await?;
-
-        rows.into_iter()
-            .map(|r| MetricPoint {
-                ts: r.bucket.to_rfc3339(),
-                cpu_pct: r.cpu_pct_avg,
-                mem_used_bytes: r.mem_used_avg,
-                mem_limit_bytes: r.mem_limit_bytes,
-                net_rx_bytes: r.net_rx_bytes,
-                net_tx_bytes: r.net_tx_bytes,
-                block_read_bytes: r.block_read_bytes,
-                block_write_bytes: r.block_write_bytes,
-            })
-            .collect()
+        )
     } else {
-        let rows = sqlx::query_as::<_, RawRow>(&format!(
+        format!(
             "SELECT ts, cpu_pct, mem_used_bytes, mem_limit_bytes,
                     net_rx_bytes, net_tx_bytes, block_read_bytes, block_write_bytes
              FROM project_metrics
              WHERE project_id = $1 AND ts >= now() - interval '{interval}'
              ORDER BY ts"
-        ))
+        )
+    };
+
+    let points = sqlx::query_as::<_, MetricRow>(&sql)
         .bind(project_id)
         .fetch_all(&state.db)
-        .await?;
-
-        rows.into_iter()
-            .map(|r| MetricPoint {
-                ts: r.ts.to_rfc3339(),
-                cpu_pct: r.cpu_pct,
-                mem_used_bytes: r.mem_used_bytes,
-                mem_limit_bytes: r.mem_limit_bytes,
-                net_rx_bytes: r.net_rx_bytes,
-                net_tx_bytes: r.net_tx_bytes,
-                block_read_bytes: r.block_read_bytes,
-                block_write_bytes: r.block_write_bytes,
-            })
-            .collect()
-    };
+        .await?
+        .into_iter()
+        .map(|r| MetricPoint {
+            ts: r.ts.to_rfc3339(),
+            cpu_pct: r.cpu_pct,
+            mem_used_bytes: r.mem_used_bytes,
+            mem_limit_bytes: r.mem_limit_bytes,
+            net_rx_bytes: r.net_rx_bytes,
+            net_tx_bytes: r.net_tx_bytes,
+            block_read_bytes: r.block_read_bytes,
+            block_write_bytes: r.block_write_bytes,
+        })
+        .collect();
 
     Ok(Json(MetricsResponse {
         range,
@@ -121,22 +110,10 @@ pub async fn get_metrics(
 }
 
 #[derive(sqlx::FromRow)]
-struct RawRow {
+struct MetricRow {
     ts: DateTime<Utc>,
     cpu_pct: f64,
     mem_used_bytes: i64,
-    mem_limit_bytes: i64,
-    net_rx_bytes: i64,
-    net_tx_bytes: i64,
-    block_read_bytes: i64,
-    block_write_bytes: i64,
-}
-
-#[derive(sqlx::FromRow)]
-struct RollupRow {
-    bucket: DateTime<Utc>,
-    cpu_pct_avg: f64,
-    mem_used_avg: i64,
     mem_limit_bytes: i64,
     net_rx_bytes: i64,
     net_tx_bytes: i64,
