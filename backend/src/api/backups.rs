@@ -220,7 +220,9 @@ pub async fn restore_backup(
     }
 
     let backup = sqlx::query_as::<_, Backup>(
-        "SELECT * FROM backups WHERE id = $1 AND project_id = $2 AND status = 'completed'",
+        "UPDATE backups SET status = 'restoring'
+         WHERE id = $1 AND project_id = $2 AND status = 'completed'
+         RETURNING *",
     )
     .bind(backup_id)
     .bind(project_id)
@@ -233,16 +235,55 @@ pub async fn restore_backup(
         .clone()
         .ok_or_else(|| AppError::BadRequest("Project has no container".into()))?;
 
-    backup::restore_from_file(
-        &container_id,
-        &project.db_user,
-        &project.db_name,
-        &project.db_password,
-        &PathBuf::from(&backup.file_path),
-    )
-    .await?;
+    spawn_restore_task(
+        state,
+        backup.id,
+        container_id,
+        project.db_user,
+        project.db_name,
+        project.db_password,
+        PathBuf::from(&backup.file_path),
+    );
 
-    Ok(Json(serde_json::json!({ "restored": true })))
+    Ok(Json(serde_json::json!({ "restoring": true })))
+}
+
+fn spawn_restore_task(
+    state: Arc<AppState>,
+    backup_id: Uuid,
+    container_id: String,
+    db_user: String,
+    db_name: String,
+    db_password: String,
+    file_path: PathBuf,
+) {
+    tokio::spawn(async move {
+        let result =
+            backup::restore_from_file(&container_id, &db_user, &db_name, &db_password, &file_path)
+                .await;
+
+        match result {
+            Ok(()) => {
+                let _ = sqlx::query(
+                    "UPDATE backups SET status = 'completed', completed_at = now() WHERE id = $1",
+                )
+                .bind(backup_id)
+                .execute(&state.db)
+                .await;
+            }
+            Err(e) => {
+                tracing::error!("Restore {} failed: {}", backup_id, e);
+                let _ = sqlx::query(
+                    "UPDATE backups SET status = 'failed', error = $1, completed_at = now()
+                     WHERE id = $2",
+                )
+                .bind(e.to_string())
+                .bind(backup_id)
+                .execute(&state.db)
+                .await;
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

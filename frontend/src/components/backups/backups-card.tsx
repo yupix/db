@@ -35,7 +35,9 @@ export function BackupsCard({ projectId, running }: { projectId: string; running
     // without the user needing to refresh.
     refetchInterval: (query) => {
       const list = query.state.data;
-      return list?.some((b) => b.status === "creating") ? 5_000 : 30_000;
+      return list?.some((b) => b.status === "creating" || b.status === "restoring")
+        ? 5_000
+        : 30_000;
     },
   });
 
@@ -64,7 +66,10 @@ export function BackupsCard({ projectId, running }: { projectId: string; running
 
   const restoreBackup = useMutation({
     mutationFn: (id: string) => backupsApi.restore(projectId, id),
-    onSuccess: () => setError(""),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["backups", projectId] });
+      setError("");
+    },
     onError: (e) => setError(e instanceof ApiError ? e.message : "復元に失敗しました"),
   });
 
@@ -207,7 +212,11 @@ export function BackupsCard({ projectId, running }: { projectId: string; running
                     variant="ghost"
                     size="sm"
                     className="text-red-500"
-                    onClick={() => deleteBackup.mutate(b.id)}
+                    onClick={() => {
+                      if (confirm("このバックアップを削除します。ファイルも完全に削除されます。よろしいですか？")) {
+                        deleteBackup.mutate(b.id);
+                      }
+                    }}
                   >
                     削除
                   </Button>

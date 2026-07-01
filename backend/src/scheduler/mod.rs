@@ -19,7 +19,27 @@ use crate::state::AppState;
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60); // hourly
 
 pub fn spawn(state: Arc<AppState>) {
-    tokio::spawn(async move { run_loop(state).await });
+    tokio::spawn(async move {
+        reconcile_stale_statuses(&state).await;
+        run_loop(state).await;
+    });
+}
+
+/// Any backup stuck in `creating` or `restoring` after a restart is
+/// unrecoverable — the tokio task that would update it is gone.
+async fn reconcile_stale_statuses(state: &Arc<AppState>) {
+    if let Err(e) = sqlx::query(
+        "UPDATE backups
+         SET status = 'failed',
+             error = 'server restarted during operation',
+             completed_at = now()
+         WHERE status IN ('creating', 'restoring')",
+    )
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!("Failed to reconcile stale backup statuses: {}", e);
+    }
 }
 
 async fn run_loop(state: Arc<AppState>) {
@@ -61,6 +81,7 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), sqlx::Error> {
              SELECT 1 FROM backups b
              WHERE b.project_id = p.id
                AND b.kind = 'scheduled'
+               AND b.status <> 'failed'
                AND b.created_at > now() - interval '23 hours'
            )",
     )

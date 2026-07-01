@@ -3,7 +3,7 @@
 //! project deletion until explicitly pruned.
 
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::AppError;
 
@@ -44,27 +44,36 @@ pub async fn dump_to_file(
         .map_err(|e| AppError::Internal(format!("Failed to start pg_dump: {}", e)))?;
 
     let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
     let mut file = tokio::fs::File::create(dest_path)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to create backup file: {}", e)))?;
 
-    let copy_result = tokio::time::timeout(DUMP_TIMEOUT, tokio::io::copy(&mut stdout, &mut file))
-        .await
-        .map_err(|_| AppError::Internal("pg_dump timed out".into()))?;
+    // Drain stdout (archive data) and stderr concurrently to avoid a deadlock
+    // where pg_dump blocks on a full stderr pipe while we wait to read stdout.
+    let (copy_result, stderr_bytes) = tokio::time::timeout(DUMP_TIMEOUT, async {
+        tokio::join!(tokio::io::copy(&mut stdout, &mut file), async {
+            let mut buf = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut buf).await;
+            buf
+        })
+    })
+    .await
+    .map_err(|_| AppError::Internal("pg_dump timed out".into()))?;
 
     let bytes_written =
         copy_result.map_err(|e| AppError::Internal(format!("pg_dump I/O error: {}", e)))?;
 
-    let output = tokio::time::timeout(DUMP_TIMEOUT, child.wait_with_output())
+    let status = tokio::time::timeout(DUMP_TIMEOUT, child.wait())
         .await
         .map_err(|_| AppError::Internal("pg_dump timed out".into()))?
         .map_err(|e| AppError::Internal(format!("Failed to wait for pg_dump: {}", e)))?;
 
-    if !output.status.success() {
+    if !status.success() {
         let _ = tokio::fs::remove_file(dest_path).await;
         return Err(AppError::Internal(format!(
             "pg_dump failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr_bytes).trim()
         )));
     }
 
@@ -109,25 +118,43 @@ pub async fn restore_from_file(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to open backup file: {}", e)))?;
 
-    {
-        let mut stdin = child.stdin.take().expect("stdin piped");
-        tokio::time::timeout(DUMP_TIMEOUT, tokio::io::copy(&mut file, &mut stdin))
-            .await
-            .map_err(|_| AppError::Internal("pg_restore timed out".into()))?
-            .map_err(|e| AppError::Internal(format!("pg_restore I/O error: {}", e)))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to close pg_restore stdin: {}", e)))?;
-    }
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
 
-    let output = tokio::time::timeout(DUMP_TIMEOUT, child.wait_with_output())
+    // Write stdin and drain stdout/stderr concurrently.  Without concurrent
+    // draining, pg_restore filling the 64 KB stderr pipe while we wait for
+    // stdin to be consumed causes a classic deadlock.
+    let (stdin_result, _, stderr_bytes) = tokio::time::timeout(DUMP_TIMEOUT, async {
+        tokio::join!(
+            async {
+                let r = tokio::io::copy(&mut file, &mut stdin).await;
+                let _ = stdin.shutdown().await;
+                r
+            },
+            async {
+                let mut buf = Vec::new();
+                let _ = stdout_pipe.read_to_end(&mut buf).await;
+            },
+            async {
+                let mut buf = Vec::new();
+                let _ = stderr_pipe.read_to_end(&mut buf).await;
+                buf
+            }
+        )
+    })
+    .await
+    .map_err(|_| AppError::Internal("pg_restore timed out".into()))?;
+
+    stdin_result.map_err(|e| AppError::Internal(format!("pg_restore I/O error: {}", e)))?;
+
+    let status = tokio::time::timeout(DUMP_TIMEOUT, child.wait())
         .await
         .map_err(|_| AppError::Internal("pg_restore timed out".into()))?
         .map_err(|e| AppError::Internal(format!("Failed to wait for pg_restore: {}", e)))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         // pg_restore exits non-zero even for purely cosmetic issues (e.g. a
         // missing role from --no-owner skips), which it reports as
         // "pg_restore: warning: ...". Only treat the run as failed if stderr
