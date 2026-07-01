@@ -241,29 +241,38 @@ pub async fn create_postgres_container(
     Ok(result.id)
 }
 
+/// Upper bound on an in-container `psql` exec so a wedged container can't block
+/// the caller (a startup task or a request handler) indefinitely.
+const PSQL_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Run `CREATE EXTENSION IF NOT EXISTS pg_stat_statements` inside the container.
-async fn enable_pg_stat_statements(
+/// Idempotent; safe to call again to lazily recover from a transient failure at
+/// provisioning time. Fails on containers without the required
+/// `shared_preload_libraries` preload (i.e. created before Phase 7.1).
+pub(crate) async fn enable_pg_stat_statements(
     container_id: &str,
     db_user: &str,
     db_name: &str,
     db_password: &str,
 ) -> Result<(), AppError> {
-    let output = tokio::process::Command::new("docker")
-        .args([
-            "exec",
-            container_id,
-            "psql",
-            "-U",
-            db_user,
-            "-d",
-            db_name,
-            "-q",
-            "-c",
-            "CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
-        ])
-        .env("PGPASSWORD", db_password)
-        .output()
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_id,
+        "psql",
+        "-U",
+        db_user,
+        "-d",
+        db_name,
+        "-q",
+        "-c",
+        "CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
+    ])
+    .env("PGPASSWORD", db_password);
+
+    let output = tokio::time::timeout(PSQL_EXEC_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| AppError::Internal("psql exec timed out".into()))?
         .map_err(|e| AppError::Internal(format!("Failed to run psql: {}", e)))?;
 
     if !output.status.success() {
@@ -276,7 +285,13 @@ async fn enable_pg_stat_statements(
 
 /// Run a read-only SQL query inside the container and return CSV (header + rows).
 /// Used for introspection queries such as `pg_stat_statements`.
-pub async fn psql_query_csv(
+///
+/// # Safety
+/// `sql` is interpolated verbatim into `COPY ({sql}) TO STDOUT` and runs as the
+/// container superuser (COPY can reach `PROGRAM`/file writes). Callers MUST pass
+/// only trusted, constant SQL — never user input. Kept `pub(crate)` for this
+/// reason.
+pub(crate) async fn psql_query_csv(
     container_id: &str,
     db_user: &str,
     db_name: &str,
@@ -288,25 +303,27 @@ pub async fn psql_query_csv(
         sql.trim().trim_end_matches(';')
     );
 
-    let output = tokio::process::Command::new("docker")
-        .args([
-            "exec",
-            "-i",
-            container_id,
-            "psql",
-            "-U",
-            db_user,
-            "-d",
-            db_name,
-            "-q",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            &wrapped,
-        ])
-        .env("PGPASSWORD", db_password)
-        .output()
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        "-i",
+        container_id,
+        "psql",
+        "-U",
+        db_user,
+        "-d",
+        db_name,
+        "-q",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        &wrapped,
+    ])
+    .env("PGPASSWORD", db_password);
+
+    let output = tokio::time::timeout(PSQL_EXEC_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| AppError::Internal("psql exec timed out".into()))?
         .map_err(|e| AppError::Internal(format!("Failed to run psql: {}", e)))?;
 
     if !output.status.success() {

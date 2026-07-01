@@ -6,11 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
-  return `${ms.toFixed(1)} ms`;
+  // Don't round sub-0.1ms timings down to "0.0 ms" — that reads as "no time".
+  if (ms > 0 && ms < 0.1) return "< 0.1 ms";
+  return `${ms.toFixed(2)} ms`;
 }
 
 export function QueryStatsCard({ projectId, running }: { projectId: string; running: boolean }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["query-stats", projectId],
     queryFn: () => metricsApi.queryStats(projectId),
     refetchInterval: 60_000,
@@ -32,6 +34,10 @@ export function QueryStatsCard({ projectId, running }: { projectId: string; runn
           </p>
         ) : isLoading ? (
           <p className="text-sm text-muted-foreground py-6 text-center">読み込み中...</p>
+        ) : error ? (
+          <p className="text-sm text-destructive py-6 text-center">
+            クエリ統計の取得に失敗しました
+          </p>
         ) : !data?.available ? (
           <p className="text-sm text-muted-foreground py-6 text-center">
             このプロジェクトでは pg_stat_statements が利用できません

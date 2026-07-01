@@ -162,27 +162,59 @@ pub async fn get_query_stats(
 
     let sql = "SELECT query, calls, total_exec_time, mean_exec_time, rows \
                FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 20";
+    let (user, db, pass) = (
+        project.db_user.as_str(),
+        project.db_name.as_str(),
+        project.db_password.as_str(),
+    );
 
-    // If the extension isn't present, psql errors — treat that as "unavailable"
-    // rather than a hard failure so the endpoint stays informative.
-    let csv = match docker::psql_query_csv(
-        container_id,
-        &project.db_user,
-        &project.db_name,
-        &project.db_password,
-        sql,
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return Ok(Json(QueryStatsResponse {
-                available: false,
-                stats: vec![],
-            }));
+    // Only a *missing extension* means "unavailable". Any other error (docker
+    // down, timeout, auth) is a real failure and must not be disguised as
+    // "recreate the project".
+    let csv = match docker::psql_query_csv(container_id, user, db, pass, sql).await {
+        Ok(csv) => csv,
+        Err(e) if is_missing_extension(&e) => {
+            // The extension may just not be created yet (e.g. a transient failure
+            // during provisioning). db_user is the superuser, so try once to
+            // enable it and re-run; if it still can't be created (an old container
+            // without the preload), it's genuinely unavailable.
+            if docker::enable_pg_stat_statements(container_id, user, db, pass)
+                .await
+                .is_err()
+            {
+                return Ok(Json(QueryStatsResponse {
+                    available: false,
+                    stats: vec![],
+                }));
+            }
+            match docker::psql_query_csv(container_id, user, db, pass, sql).await {
+                Ok(csv) => csv,
+                Err(e) if is_missing_extension(&e) => {
+                    return Ok(Json(QueryStatsResponse {
+                        available: false,
+                        stats: vec![],
+                    }));
+                }
+                Err(e) => return Err(e),
+            }
         }
+        Err(e) => return Err(e),
     };
 
+    Ok(Json(QueryStatsResponse {
+        available: true,
+        stats: parse_query_stats(&csv)?,
+    }))
+}
+
+/// True when a psql error indicates the pg_stat_statements view doesn't exist,
+/// as opposed to a real infrastructure failure.
+fn is_missing_extension(e: &AppError) -> bool {
+    matches!(e, AppError::BadRequest(msg)
+        if msg.contains("pg_stat_statements") && msg.contains("does not exist"))
+}
+
+fn parse_query_stats(csv: &str) -> Result<Vec<QueryStat>, AppError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_reader(csv.as_bytes());
@@ -198,9 +230,5 @@ pub async fn get_query_stats(
             rows: r.get(4).and_then(|v| v.parse().ok()).unwrap_or(0),
         });
     }
-
-    Ok(Json(QueryStatsResponse {
-        available: true,
-        stats,
-    }))
+    Ok(stats)
 }
