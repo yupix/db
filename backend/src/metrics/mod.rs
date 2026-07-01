@@ -124,29 +124,38 @@ async fn evaluate_alerts(
         return Ok(());
     }
 
-    let mem_pct = if s.mem_limit_bytes > 0 {
-        (s.mem_used_bytes as f64 / s.mem_limit_bytes as f64) * 100.0
-    } else {
-        0.0
-    };
+    // None when the container has no memory limit (common: cgroups v2 hosts,
+    // or containers started without --memory). Substituting 0.0 here would make
+    // "lt" rules fire permanently (0 < threshold is almost always true), so
+    // mem_pct rules are skipped entirely rather than evaluated against a
+    // fabricated value.
+    let mem_pct = (s.mem_limit_bytes > 0)
+        .then(|| (s.mem_used_bytes as f64 / s.mem_limit_bytes as f64) * 100.0);
 
     for (id, metric, comparison, threshold) in rules {
         let value = match metric.as_str() {
             "cpu_pct" => s.cpu_pct,
-            "mem_pct" => mem_pct,
+            "mem_pct" => match mem_pct {
+                Some(v) => v,
+                None => continue,
+            },
             _ => continue,
         };
         let triggered = match comparison.as_str() {
             "lt" => value < threshold,
-            _ => value > threshold, // "gt" and any unrecognized value default to gt
+            "gt" => value > threshold,
+            _ => continue, // corrupt/unrecognized comparison: skip rather than fail open
         };
 
+        // Re-check `enabled` at write time: a concurrent update_alert() could
+        // have disabled this rule since the SELECT above, and we must not
+        // resurrect `triggered` on a rule the user just turned off.
         sqlx::query(
             "UPDATE metric_alerts
              SET triggered = $1,
                  last_triggered_at = CASE WHEN $1 THEN now() ELSE last_triggered_at END,
                  updated_at = now()
-             WHERE id = $2",
+             WHERE id = $2 AND enabled = true",
         )
         .bind(triggered)
         .bind(id)

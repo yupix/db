@@ -52,12 +52,20 @@ export function AlertsCard({ projectId }: { projectId: string }) {
   const toggleAlert = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       metricsApi.updateAlert(projectId, id, { enabled }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts", projectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alerts", projectId] });
+      setError("");
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : "更新に失敗しました"),
   });
 
   const deleteAlert = useMutation({
     mutationFn: (id: string) => metricsApi.deleteAlert(projectId, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts", projectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alerts", projectId] });
+      setError("");
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : "削除に失敗しました"),
   });
 
   const metricLabel = (m: string) => METRICS.find((x) => x.value === m)?.label ?? m;
