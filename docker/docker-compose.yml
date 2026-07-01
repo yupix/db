@@ -29,8 +29,10 @@ services:
       RUST_LOG: info,backend=debug
       HOST: 0.0.0.0
       PORT: 8080
+      BACKUP_DIR: /data/backups
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - backend-backups:/data/backups
     depends_on:
       control-db:
         condition: service_healthy
@@ -49,3 +51,4 @@ services:
 
 volumes:
   control-pgdata:
+  backend-backups:

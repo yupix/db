@@ -36,6 +36,33 @@ pub struct TeamMember {
 
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
+pub struct Backup {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub branch_id: Option<Uuid>,
+    pub file_path: String,
+    pub size_bytes: Option<i64>,
+    pub status: String,
+    pub kind: String,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct BackupPolicy {
+    pub project_id: Uuid,
+    pub enabled: bool,
+    pub schedule_hour: i32,
+    pub daily_keep: i32,
+    pub weekly_keep: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct MetricAlert {
     pub id: Uuid,
     pub project_id: Uuid,

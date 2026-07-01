@@ -4,6 +4,10 @@ pub struct Config {
     pub jwt_secret: String,
     pub host: String,
     pub port: u16,
+    /// Host-side directory backup archives are written to. Must survive
+    /// project/container deletion, so it must NOT be inside a project
+    /// container's own filesystem.
+    pub backup_dir: String,
 }
 
 impl Config {
@@ -19,6 +23,7 @@ impl Config {
             port: std::env::var("PORT")
                 .unwrap_or_else(|_| "8080".into())
                 .parse()?,
+            backup_dir: std::env::var("BACKUP_DIR").unwrap_or_else(|_| "./data/backups".into()),
         })
     }
 }

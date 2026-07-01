@@ -244,6 +244,51 @@ export interface MetricAlert {
   created_at: string;
 }
 
+export interface Backup {
+  id: string;
+  project_id: string;
+  file_path: string;
+  size_bytes: number | null;
+  status: string;
+  kind: string;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface BackupPolicy {
+  enabled: boolean;
+  schedule_hour: number;
+  daily_keep: number;
+  weekly_keep: number;
+}
+
+export const backupsApi = {
+  list: (projectId: string) => api<Backup[]>(`/api/projects/${projectId}/backups`),
+
+  create: (projectId: string) =>
+    api<Backup>(`/api/projects/${projectId}/backups`, { method: "POST" }),
+
+  delete: (projectId: string, backupId: string) =>
+    api<{ deleted: boolean }>(`/api/projects/${projectId}/backups/${backupId}`, {
+      method: "DELETE",
+    }),
+
+  restore: (projectId: string, backupId: string) =>
+    api<{ restored: boolean }>(`/api/projects/${projectId}/backups/${backupId}/restore`, {
+      method: "POST",
+    }),
+
+  getPolicy: (projectId: string) =>
+    api<BackupPolicy>(`/api/projects/${projectId}/backup-policy`),
+
+  updatePolicy: (projectId: string, data: Partial<BackupPolicy>) =>
+    api<BackupPolicy>(`/api/projects/${projectId}/backup-policy`, {
+      method: "PATCH",
+      body: data,
+    }),
+};
+
 export const metricsApi = {
   get: (projectId: string, range: MetricsRange) =>
     api<MetricsResponse>(`/api/projects/${projectId}/metrics?range=${range}`),

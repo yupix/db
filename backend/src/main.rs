@@ -12,6 +12,7 @@ mod db;
 mod error;
 mod metrics;
 mod orchestrator;
+mod scheduler;
 mod state;
 mod util;
 
@@ -51,6 +52,10 @@ async fn main() -> anyhow::Result<()> {
     // Start background metrics collection (Docker stats → time-series + rollup).
     metrics::spawn(state.clone());
     tracing::info!("Metrics collector started");
+
+    // Start the scheduled-backup + retention-pruning loop.
+    scheduler::spawn(state.clone());
+    tracing::info!("Backup scheduler started");
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::mirror_request())

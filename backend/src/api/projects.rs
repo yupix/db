@@ -38,6 +38,22 @@ pub fn router() -> Router<Arc<AppState>> {
             axum::routing::patch(super::metrics::update_alert).delete(super::metrics::delete_alert),
         )
         .route(
+            "/{id}/backups",
+            get(super::backups::list_backups).post(super::backups::create_backup),
+        )
+        .route(
+            "/{id}/backups/{backup_id}",
+            axum::routing::delete(super::backups::delete_backup),
+        )
+        .route(
+            "/{id}/backups/{backup_id}/restore",
+            post(super::backups::restore_backup),
+        )
+        .route(
+            "/{id}/backup-policy",
+            get(super::backups::get_backup_policy).patch(super::backups::update_backup_policy),
+        )
+        .route(
             "/{id}/pool",
             get(get_pool_settings).patch(update_pool_settings),
         )
