@@ -36,6 +36,21 @@ pub struct TeamMember {
 
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
+pub struct MetricAlert {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub metric: String,
+    pub comparison: String,
+    pub threshold: f64,
+    pub enabled: bool,
+    pub triggered: bool,
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct Invitation {
     pub id: Uuid,
     pub team_id: Uuid,

@@ -30,6 +30,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/metrics", get(super::metrics::get_metrics))
         .route("/{id}/query-stats", get(super::metrics::get_query_stats))
         .route(
+            "/{id}/alerts",
+            get(super::metrics::list_alerts).post(super::metrics::create_alert),
+        )
+        .route(
+            "/{id}/alerts/{alert_id}",
+            axum::routing::patch(super::metrics::update_alert).delete(super::metrics::delete_alert),
+        )
+        .route(
             "/{id}/pool",
             get(get_pool_settings).patch(update_pool_settings),
         )

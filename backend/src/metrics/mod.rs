@@ -1,8 +1,8 @@
 //! Background metrics collection.
 //!
 //! Two periodic tasks run for the lifetime of the process:
-//! - the **collector** polls `docker stats` for every running project and
-//!   stores a raw sample, and
+//! - the **collector** polls `docker stats` for every running project, stores
+//!   a raw sample, and evaluates that project's alert thresholds (7.5), and
 //! - the **rollup** aggregates completed-hour raw samples into hourly buckets
 //!   and prunes data past its retention window.
 
@@ -98,6 +98,63 @@ async fn collect_project(state: &AppState, project_id: Uuid, container_id: Strin
     if let Err(e) = res {
         tracing::warn!("failed to store metrics for {}: {}", project_id, e);
     }
+
+    if let Err(e) = evaluate_alerts(state, project_id, &s).await {
+        tracing::warn!("failed to evaluate alerts for {}: {}", project_id, e);
+    }
+}
+
+/// Compare this sample against the project's enabled alert rules and flip
+/// `triggered` when it crosses the threshold. Runs once per sample (every
+/// COLLECT_INTERVAL) so `triggered` always reflects the latest reading.
+async fn evaluate_alerts(
+    state: &AppState,
+    project_id: Uuid,
+    s: &docker::ContainerStats,
+) -> Result<(), sqlx::Error> {
+    let rules = sqlx::query_as::<_, (Uuid, String, String, f64)>(
+        "SELECT id, metric, comparison, threshold FROM metric_alerts
+         WHERE project_id = $1 AND enabled = true",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let mem_pct = if s.mem_limit_bytes > 0 {
+        (s.mem_used_bytes as f64 / s.mem_limit_bytes as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    for (id, metric, comparison, threshold) in rules {
+        let value = match metric.as_str() {
+            "cpu_pct" => s.cpu_pct,
+            "mem_pct" => mem_pct,
+            _ => continue,
+        };
+        let triggered = match comparison.as_str() {
+            "lt" => value < threshold,
+            _ => value > threshold, // "gt" and any unrecognized value default to gt
+        };
+
+        sqlx::query(
+            "UPDATE metric_alerts
+             SET triggered = $1,
+                 last_triggered_at = CASE WHEN $1 THEN now() ELSE last_triggered_at END,
+                 updated_at = now()
+             WHERE id = $2",
+        )
+        .bind(triggered)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn rollup_loop(state: Arc<AppState>) {

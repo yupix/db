@@ -6,9 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
+use crate::db::models::MetricAlert;
 use crate::error::AppError;
 use crate::orchestrator::docker;
 use crate::state::AppState;
@@ -231,4 +233,183 @@ fn parse_query_stats(csv: &str) -> Result<Vec<QueryStat>, AppError> {
         });
     }
     Ok(stats)
+}
+
+// ---------------------------------------------------------------------------
+// Alert thresholds (7.5)
+// ---------------------------------------------------------------------------
+
+fn valid_metric(m: &str) -> bool {
+    matches!(m, "cpu_pct" | "mem_pct")
+}
+
+fn valid_comparison(c: &str) -> bool {
+    matches!(c, "gt" | "lt")
+}
+
+#[derive(Serialize)]
+pub struct AlertResponse {
+    id: String,
+    project_id: String,
+    metric: String,
+    comparison: String,
+    threshold: f64,
+    enabled: bool,
+    triggered: bool,
+    last_triggered_at: Option<String>,
+    created_at: String,
+}
+
+impl AlertResponse {
+    fn from(a: &MetricAlert) -> Self {
+        Self {
+            id: a.id.to_string(),
+            project_id: a.project_id.to_string(),
+            metric: a.metric.clone(),
+            comparison: a.comparison.clone(),
+            threshold: a.threshold,
+            enabled: a.enabled,
+            triggered: a.triggered,
+            last_triggered_at: a.last_triggered_at.map(|t| t.to_rfc3339()),
+            created_at: a.created_at.to_rfc3339(),
+        }
+    }
+}
+
+pub async fn list_alerts(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<AlertResponse>>, AppError> {
+    fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
+
+    let alerts = sqlx::query_as::<_, MetricAlert>(
+        "SELECT * FROM metric_alerts WHERE project_id = $1 ORDER BY created_at",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(alerts.iter().map(AlertResponse::from).collect()))
+}
+
+#[derive(Deserialize, Validate)]
+pub struct CreateAlertRequest {
+    metric: String,
+    comparison: Option<String>,
+    #[validate(range(min = 0.0, max = 100.0))]
+    threshold: f64,
+}
+
+pub async fn create_alert(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path(project_id): Path<Uuid>,
+    Json(req): Json<CreateAlertRequest>,
+) -> Result<Json<AlertResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
+
+    if !valid_metric(&req.metric) {
+        return Err(AppError::BadRequest(
+            "metric must be one of: cpu_pct, mem_pct".into(),
+        ));
+    }
+    let comparison = req.comparison.unwrap_or_else(|| "gt".to_string());
+    if !valid_comparison(&comparison) {
+        return Err(AppError::BadRequest(
+            "comparison must be one of: gt, lt".into(),
+        ));
+    }
+
+    let alert = sqlx::query_as::<_, MetricAlert>(
+        "INSERT INTO metric_alerts (project_id, metric, comparison, threshold)
+         VALUES ($1, $2, $3, $4) RETURNING *",
+    )
+    .bind(project_id)
+    .bind(&req.metric)
+    .bind(&comparison)
+    .bind(req.threshold)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(AlertResponse::from(&alert)))
+}
+
+#[derive(Deserialize, Validate)]
+pub struct UpdateAlertRequest {
+    #[validate(range(min = 0.0, max = 100.0))]
+    threshold: Option<f64>,
+    comparison: Option<String>,
+    enabled: Option<bool>,
+}
+
+pub async fn update_alert(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path((project_id, alert_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<UpdateAlertRequest>,
+) -> Result<Json<AlertResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
+
+    if let Some(comparison) = &req.comparison
+        && !valid_comparison(comparison)
+    {
+        return Err(AppError::BadRequest(
+            "comparison must be one of: gt, lt".into(),
+        ));
+    }
+
+    let existing = sqlx::query_as::<_, MetricAlert>(
+        "SELECT * FROM metric_alerts WHERE id = $1 AND project_id = $2",
+    )
+    .bind(alert_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let threshold = req.threshold.unwrap_or(existing.threshold);
+    let comparison = req.comparison.unwrap_or(existing.comparison);
+    let enabled = req.enabled.unwrap_or(existing.enabled);
+
+    let updated = sqlx::query_as::<_, MetricAlert>(
+        "UPDATE metric_alerts
+         SET threshold = $1, comparison = $2, enabled = $3, updated_at = now()
+         WHERE id = $4
+         RETURNING *",
+    )
+    .bind(threshold)
+    .bind(&comparison)
+    .bind(enabled)
+    .bind(alert_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(AlertResponse::from(&updated)))
+}
+
+pub async fn delete_alert(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path((project_id, alert_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
+
+    let result = sqlx::query("DELETE FROM metric_alerts WHERE id = $1 AND project_id = $2")
+        .bind(alert_id)
+        .bind(project_id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
 }

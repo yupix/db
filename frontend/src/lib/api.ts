@@ -232,12 +232,47 @@ export interface QueryStatsResponse {
   stats: QueryStat[];
 }
 
+export interface MetricAlert {
+  id: string;
+  project_id: string;
+  metric: "cpu_pct" | "mem_pct";
+  comparison: "gt" | "lt";
+  threshold: number;
+  enabled: boolean;
+  triggered: boolean;
+  last_triggered_at: string | null;
+  created_at: string;
+}
+
 export const metricsApi = {
   get: (projectId: string, range: MetricsRange) =>
     api<MetricsResponse>(`/api/projects/${projectId}/metrics?range=${range}`),
 
   queryStats: (projectId: string) =>
     api<QueryStatsResponse>(`/api/projects/${projectId}/query-stats`),
+
+  listAlerts: (projectId: string) =>
+    api<MetricAlert[]>(`/api/projects/${projectId}/alerts`),
+
+  createAlert: (
+    projectId: string,
+    data: { metric: string; comparison?: string; threshold: number }
+  ) => api<MetricAlert>(`/api/projects/${projectId}/alerts`, { method: "POST", body: data }),
+
+  updateAlert: (
+    projectId: string,
+    alertId: string,
+    data: { threshold?: number; comparison?: string; enabled?: boolean }
+  ) =>
+    api<MetricAlert>(`/api/projects/${projectId}/alerts/${alertId}`, {
+      method: "PATCH",
+      body: data,
+    }),
+
+  deleteAlert: (projectId: string, alertId: string) =>
+    api<{ deleted: boolean }>(`/api/projects/${projectId}/alerts/${alertId}`, {
+      method: "DELETE",
+    }),
 };
 
 export const authApi = {
