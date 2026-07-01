@@ -199,6 +199,13 @@ pub async fn create_postgres_container(
         env: Some(env),
         host_config: Some(host_config),
         healthcheck: Some(healthcheck),
+        // Preload pg_stat_statements so per-query statistics are available
+        // (Phase 7.1). The extension itself is created after the DB is healthy.
+        cmd: Some(vec![
+            "postgres",
+            "-c",
+            "shared_preload_libraries=pg_stat_statements",
+        ]),
         ..Default::default()
     };
 
@@ -220,8 +227,95 @@ pub async fn create_postgres_container(
 
     wait_for_healthy(docker, &result.id).await?;
 
+    // Best-effort: enable the pg_stat_statements extension. Non-fatal — a
+    // failure here just means query stats won't be available for this project.
+    if let Err(e) = enable_pg_stat_statements(&result.id, db_user, db_name, db_password).await {
+        tracing::warn!(
+            "Failed to enable pg_stat_statements for {}: {}",
+            container_name,
+            e
+        );
+    }
+
     tracing::info!("Container {} is healthy", container_name);
     Ok(result.id)
+}
+
+/// Run `CREATE EXTENSION IF NOT EXISTS pg_stat_statements` inside the container.
+async fn enable_pg_stat_statements(
+    container_id: &str,
+    db_user: &str,
+    db_name: &str,
+    db_password: &str,
+) -> Result<(), AppError> {
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            container_id,
+            "psql",
+            "-U",
+            db_user,
+            "-d",
+            db_name,
+            "-q",
+            "-c",
+            "CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
+        ])
+        .env("PGPASSWORD", db_password)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run psql: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::Internal(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Run a read-only SQL query inside the container and return CSV (header + rows).
+/// Used for introspection queries such as `pg_stat_statements`.
+pub async fn psql_query_csv(
+    container_id: &str,
+    db_user: &str,
+    db_name: &str,
+    db_password: &str,
+    sql: &str,
+) -> Result<String, AppError> {
+    let wrapped = format!(
+        "COPY ({}) TO STDOUT WITH CSV HEADER",
+        sql.trim().trim_end_matches(';')
+    );
+
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            container_id,
+            "psql",
+            "-U",
+            db_user,
+            "-d",
+            db_name,
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            &wrapped,
+        ])
+        .env("PGPASSWORD", db_password)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run psql: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::BadRequest(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 // ---------------------------------------------------------------------------

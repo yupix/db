@@ -219,9 +219,25 @@ export interface MetricsResponse {
 
 export type MetricsRange = "1h" | "6h" | "24h" | "7d" | "30d";
 
+export interface QueryStat {
+  query: string;
+  calls: number;
+  total_exec_time_ms: number;
+  mean_exec_time_ms: number;
+  rows: number;
+}
+
+export interface QueryStatsResponse {
+  available: boolean;
+  stats: QueryStat[];
+}
+
 export const metricsApi = {
   get: (projectId: string, range: MetricsRange) =>
     api<MetricsResponse>(`/api/projects/${projectId}/metrics?range=${range}`),
+
+  queryStats: (projectId: string) =>
+    api<QueryStatsResponse>(`/api/projects/${projectId}/query-stats`),
 };
 
 export const authApi = {

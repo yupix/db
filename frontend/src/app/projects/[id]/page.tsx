@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MetricsCard } from "@/components/charts/metrics-card";
+import { QueryStatsCard } from "@/components/charts/query-stats-card";
 import Link from "next/link";
 
 const statusColors: Record<string, string> = {
@@ -281,6 +282,9 @@ export default function ProjectDetailPage() {
 
           {/* Metrics */}
           <MetricsCard projectId={id} running={project.status === "running"} />
+
+          {/* Query statistics */}
+          <QueryStatsCard projectId={id} running={project.status === "running"} />
 
           {/* Pool Settings */}
           {poolSettings && (

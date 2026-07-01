@@ -261,7 +261,7 @@ CREATE TABLE projects (
 - [x] 6.4 招待フロー
 
 ### Phase 7: メトリクス & モニタリング 📊
-- [ ] 7.1 `pg_stat_statements` 拡張でクエリ統計
+- [x] 7.1 `pg_stat_statements` 拡張でクエリ統計
 - [x] 7.2 Docker stats でコンテナリソース（CPU/メモリ/ディスク/ネットワーク）
 - [x] 7.3 時系列保存（ロールアップ）
 - [x] 7.4 Recharts でグラフ表示
@@ -302,5 +302,5 @@ docker compose up -d
 | Phase 4: ブランチ | ✅ 完了 |
 | Phase 5: SQLエディタ | ✅ 完了 |
 | Phase 6: チーム | ✅ 完了 |
-| Phase 7: メトリクス | 🚧 コア完了 (7.2-7.4)、7.1/7.5 残 |
+| Phase 7: メトリクス | 🚧 7.1-7.4 完了、7.5 残 |
 | Phase 8: バックアップ | 未開始 |

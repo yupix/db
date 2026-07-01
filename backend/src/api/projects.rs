@@ -28,6 +28,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/start", post(start_project))
         .route("/{id}/stop", post(stop_project))
         .route("/{id}/metrics", get(super::metrics::get_metrics))
+        .route("/{id}/query-stats", get(super::metrics::get_query_stats))
         .route(
             "/{id}/pool",
             get(get_pool_settings).patch(update_pool_settings),

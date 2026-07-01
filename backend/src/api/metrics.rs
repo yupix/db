@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
 use crate::error::AppError;
+use crate::orchestrator::docker;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -119,4 +120,87 @@ struct MetricRow {
     net_tx_bytes: i64,
     block_read_bytes: i64,
     block_write_bytes: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Query statistics via pg_stat_statements (7.1)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct QueryStat {
+    query: String,
+    calls: i64,
+    total_exec_time_ms: f64,
+    mean_exec_time_ms: f64,
+    rows: i64,
+}
+
+#[derive(Serialize)]
+pub struct QueryStatsResponse {
+    /// False when the project isn't running or pg_stat_statements isn't enabled
+    /// (e.g. a container created before Phase 7.1). The UI shows a hint instead.
+    available: bool,
+    stats: Vec<QueryStat>,
+}
+
+pub async fn get_query_stats(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<QueryStatsResponse>, AppError> {
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Read).await?;
+
+    let container_id = match &project.container_id {
+        Some(c) if project.status == "running" => c,
+        _ => {
+            return Ok(Json(QueryStatsResponse {
+                available: false,
+                stats: vec![],
+            }));
+        }
+    };
+
+    let sql = "SELECT query, calls, total_exec_time, mean_exec_time, rows \
+               FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 20";
+
+    // If the extension isn't present, psql errors — treat that as "unavailable"
+    // rather than a hard failure so the endpoint stays informative.
+    let csv = match docker::psql_query_csv(
+        container_id,
+        &project.db_user,
+        &project.db_name,
+        &project.db_password,
+        sql,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(Json(QueryStatsResponse {
+                available: false,
+                stats: vec![],
+            }));
+        }
+    };
+
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(csv.as_bytes());
+
+    let mut stats = Vec::new();
+    for record in reader.records() {
+        let r = record.map_err(|e| AppError::Internal(format!("CSV parse error: {}", e)))?;
+        stats.push(QueryStat {
+            query: r.get(0).unwrap_or("").to_string(),
+            calls: r.get(1).and_then(|v| v.parse().ok()).unwrap_or(0),
+            total_exec_time_ms: r.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            mean_exec_time_ms: r.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            rows: r.get(4).and_then(|v| v.parse().ok()).unwrap_or(0),
+        });
+    }
+
+    Ok(Json(QueryStatsResponse {
+        available: true,
+        stats,
+    }))
 }
