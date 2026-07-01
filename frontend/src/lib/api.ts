@@ -279,6 +279,12 @@ export const backupsApi = {
       method: "POST",
     }),
 
+  restoreAsBranch: (projectId: string, backupId: string, name: string) =>
+    api<Branch>(`/api/projects/${projectId}/backups/${backupId}/restore-as-branch`, {
+      method: "POST",
+      body: { name },
+    }),
+
   getPolicy: (projectId: string) =>
     api<BackupPolicy>(`/api/projects/${projectId}/backup-policy`),
 

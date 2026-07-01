@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { backupsApi, ApiError } from "@/lib/api";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,7 @@ function formatBytes(bytes: number | null): string {
 }
 
 export function BackupsCard({ projectId, running }: { projectId: string; running: boolean }) {
+  const router = useRouter();
   const qc = useQueryClient();
   const [error, setError] = useState("");
   const [policyError, setPolicyError] = useState("");
@@ -71,6 +73,18 @@ export function BackupsCard({ projectId, running }: { projectId: string; running
       setError("");
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : "復元に失敗しました"),
+  });
+
+  const restoreAsBranch = useMutation({
+    mutationFn: ({ backupId, name }: { backupId: string; name: string }) =>
+      backupsApi.restoreAsBranch(projectId, backupId, name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["branches", projectId] });
+      router.refresh();
+      setError("");
+    },
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "ブランチの作成に失敗しました"),
   });
 
   const updatePolicy = useMutation({
@@ -191,22 +205,37 @@ export function BackupsCard({ projectId, running }: { projectId: string; running
                 </div>
                 <div className="flex gap-1 shrink-0">
                   {b.status === "completed" && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!running || restoreBackup.isPending}
-                      onClick={() => {
-                        if (
-                          confirm(
-                            "このバックアップで現在のデータベースを上書きします。よろしいですか？"
-                          )
-                        ) {
-                          restoreBackup.mutate(b.id);
-                        }
-                      }}
-                    >
-                      復元
-                    </Button>
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!running || restoreBackup.isPending}
+                        onClick={() => {
+                          if (
+                            confirm(
+                              "このバックアップで現在のデータベースを上書きします。よろしいですか？"
+                            )
+                          ) {
+                            restoreBackup.mutate(b.id);
+                          }
+                        }}
+                      >
+                        復元
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={restoreAsBranch.isPending}
+                        onClick={() => {
+                          const name = prompt("新しいブランチ名を入力してください:");
+                          if (name && name.trim()) {
+                            restoreAsBranch.mutate({ backupId: b.id, name: name.trim() });
+                          }
+                        }}
+                      >
+                        ブランチとして復元
+                      </Button>
+                    </>
                   )}
                   <Button
                     variant="ghost"

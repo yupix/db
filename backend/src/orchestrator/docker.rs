@@ -512,12 +512,11 @@ pub struct BranchConfig {
     pub network_id: Option<String>,
 }
 
-pub async fn create_branch_container(
+/// Start a blank Postgres container with the given config, wait until healthy,
+/// and return the container ID. No data is copied — callers handle that.
+async fn spawn_blank_postgres_container(
     docker: &Docker,
     config: &BranchConfig,
-    source_container_id: &str,
-    source_db_name: &str,
-    source_db_user: &str,
 ) -> Result<String, AppError> {
     let mut port_bindings = HashMap::new();
     port_bindings.insert(
@@ -568,18 +567,60 @@ pub async fn create_branch_container(
     });
 
     let result = docker.create_container(options, container_config).await?;
-    let branch_container_id = result.id.clone();
+    let container_id = result.id;
 
     docker
-        .start_container(&branch_container_id, None::<StartContainerOptions<String>>)
+        .start_container(&container_id, None::<StartContainerOptions<String>>)
         .await?;
 
     tracing::info!(
-        "Branch container {} created, waiting for healthy...",
+        "Branch container {} started, waiting for healthy...",
         config.container_name
     );
 
-    wait_for_healthy(docker, &branch_container_id).await?;
+    wait_for_healthy(docker, &container_id).await?;
+
+    Ok(container_id)
+}
+
+/// Restore a `pg_dump -Fc` backup archive into a new branch container.
+pub async fn create_branch_from_backup(
+    docker: &Docker,
+    config: &BranchConfig,
+    backup_path: &std::path::PathBuf,
+) -> Result<String, AppError> {
+    let container_id = spawn_blank_postgres_container(docker, config).await?;
+
+    let result = crate::orchestrator::backup::restore_from_file(
+        &container_id,
+        &config.db_user,
+        &config.db_name,
+        &config.db_password,
+        backup_path,
+    )
+    .await;
+
+    if let Err(e) = result {
+        let _ = remove_container(docker, &container_id).await;
+        return Err(e);
+    }
+
+    tracing::info!(
+        "Branch container {} restored from backup successfully",
+        config.container_name
+    );
+
+    Ok(container_id)
+}
+
+pub async fn create_branch_container(
+    docker: &Docker,
+    config: &BranchConfig,
+    source_container_id: &str,
+    source_db_name: &str,
+    source_db_user: &str,
+) -> Result<String, AppError> {
+    let branch_container_id = spawn_blank_postgres_container(docker, config).await?;
 
     // Copy data: pg_dump from source -> collect -> psql to branch (cross-platform)
     let pg_dump_output = tokio::process::Command::new("docker")

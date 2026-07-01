@@ -9,7 +9,7 @@ use validator::Validate;
 
 use crate::auth::jwt::AuthUser;
 use crate::db::access::{Access, fetch_project_for};
-use crate::db::models::{Branch, Project};
+use crate::db::models::{Backup, Branch, Project};
 use crate::error::AppError;
 use crate::orchestrator::docker;
 use crate::state::AppState;
@@ -389,6 +389,120 @@ pub async fn reset_branch(
         &project,
         "localhost",
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Restore backup as a new branch (Phase 8.4)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Validate)]
+pub struct RestoreAsBranchRequest {
+    #[validate(length(min = 1, max = 100))]
+    name: String,
+}
+
+pub async fn restore_as_branch(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Path((project_id, backup_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<RestoreAsBranchRequest>,
+) -> Result<Json<BranchResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let project = fetch_project_for(&state.db, project_id, user_id, Access::Manage).await?;
+
+    if project.status != "running" {
+        return Err(AppError::BadRequest(
+            "Project must be running to create a branch".into(),
+        ));
+    }
+
+    let backup = sqlx::query_as::<_, Backup>(
+        "SELECT * FROM backups WHERE id = $1 AND project_id = $2 AND status = 'completed'",
+    )
+    .bind(backup_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM branches WHERE project_id = $1 AND name = $2 AND status != 'deleted'",
+    )
+    .bind(project_id)
+    .bind(&req.name)
+    .fetch_one(&state.db)
+    .await?;
+
+    if count > 0 {
+        return Err(AppError::Conflict("Branch name already exists".into()));
+    }
+
+    let port = find_available_branch_port(&state).await?;
+
+    let container_name = format!(
+        "branch-{}",
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
+
+    let branch = sqlx::query_as::<_, Branch>(
+        "INSERT INTO branches (project_id, name, container_name, port, status)
+         VALUES ($1, $2, $3, $4, 'creating') RETURNING *",
+    )
+    .bind(project_id)
+    .bind(&req.name)
+    .bind(&container_name)
+    .bind(port)
+    .fetch_one(&state.db)
+    .await?;
+
+    let state_clone = state.clone();
+    let branch_id = branch.id;
+    let file_path = std::path::PathBuf::from(&backup.file_path);
+    let branch_config = docker::BranchConfig {
+        container_name,
+        db_name: project.db_name.clone(),
+        db_user: project.db_user.clone(),
+        db_password: project.db_password.clone(),
+        port: port as u16,
+        network_id: project.docker_network_id.clone(),
+    };
+
+    tokio::spawn(async move {
+        let result =
+            docker::create_branch_from_backup(&state_clone.docker, &branch_config, &file_path)
+                .await;
+
+        match result {
+            Ok(container_id) => {
+                let _ = sqlx::query(
+                    "UPDATE branches SET container_id = $1, status = 'running', updated_at = now()
+                     WHERE id = $2",
+                )
+                .bind(&container_id)
+                .bind(branch_id)
+                .execute(&state_clone.db)
+                .await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to restore branch from backup {}: {}", backup_id, e);
+                let _ = sqlx::query(
+                    "UPDATE branches SET status = 'error', updated_at = now() WHERE id = $1",
+                )
+                .bind(branch_id)
+                .execute(&state_clone.db)
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(BranchResponse::from(&branch, &project, "localhost")))
 }
 
 async fn find_available_branch_port(state: &AppState) -> Result<i32, AppError> {

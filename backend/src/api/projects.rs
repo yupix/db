@@ -50,6 +50,10 @@ pub fn router() -> Router<Arc<AppState>> {
             post(super::backups::restore_backup),
         )
         .route(
+            "/{id}/backups/{backup_id}/restore-as-branch",
+            post(super::branches::restore_as_branch),
+        )
+        .route(
             "/{id}/backup-policy",
             get(super::backups::get_backup_policy).patch(super::backups::update_backup_policy),
         )
