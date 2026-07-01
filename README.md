@@ -28,30 +28,31 @@ db/
 - Rust 1.85+
 - Docker & Docker Compose
 
-### 開発環境起動
+### かんたんセットアップ
+
+前提チェック・`.env` 用意・Control DB 起動・依存インストールを一括で行うスクリプトを用意しています。
+
+```powershell
+# Windows (PowerShell)
+./scripts/setup.ps1
+```
 
 ```bash
-# 1. Control DB起動
-cd docker
-docker compose up control-db -d
+# Linux / macOS
+./scripts/setup.sh
+```
 
-# 2. バックエンド起動
-cd backend
-cp .env.example .env
-cargo run
+完了後、別々のターミナルで起動:
 
-# 3. フロントエンド起動
-cd frontend
-pnpm dev
+```bash
+cd backend && cargo run    # API (:8080) ※初回にマイグレーション自動適用
+cd frontend && pnpm dev    # Console (:3000)
 ```
 
 ### マイグレーション
 
-```bash
-# Control DBにマイグレーション適用
-psql postgres://admin:admin123@localhost:5432/dbcontrol -f backend/migrations/001_users.sql
-psql postgres://admin:admin123@localhost:5432/dbcontrol -f backend/migrations/002_projects.sql
-```
+マイグレーションはバックエンド起動時に `sqlx::migrate!` で自動適用されるため、
+手動での `psql` 実行は不要です (`backend/migrations/` 配下が対象)。
 
 ## 進捗
 
