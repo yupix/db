@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 開発環境セットアップスクリプト (Linux / macOS)
 #
-#   前提チェック → .env 用意 → Control DB 起動 → healthy 待ち →
+#   前提チェック → .env 対話生成 → Control DB 起動 → healthy 待ち →
 #   フロントエンド依存インストール まで一括で行う。
 #
 # 使い方:  ./scripts/setup.sh
@@ -17,6 +17,18 @@ cyan()  { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 ok()    { printf '\033[32m  OK  %s\033[0m\n' "$1"; }
 warn()  { printf '\033[33m  !!  %s\033[0m\n' "$1"; }
 fail()  { printf '\033[31m%s\033[0m\n' "$1"; }
+
+# デフォルト値付き入力。空 Enter でデフォルトを採用。
+ask() {
+    local prompt="$1" default="$2" reply
+    read -rp "  $prompt [$default]: " reply
+    echo "${reply:-$default}"
+}
+
+# ランダム英数字 48文字
+random_secret() {
+    LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48
+}
 
 # --- 1. 前提コマンドの確認 -------------------------------------------------
 cyan "前提コマンドを確認中..."
@@ -43,13 +55,68 @@ if ! docker info >/dev/null 2>&1; then
 fi
 ok "Docker デーモンが稼働中"
 
-# --- 2. backend/.env の用意 ------------------------------------------------
-cyan "backend/.env を用意中..."
+# --- 2. backend/.env の生成 ------------------------------------------------
+cyan "backend/.env を設定中..."
 if [ -f backend/.env ]; then
-    ok "backend/.env は既に存在します (スキップ)"
+    ok "backend/.env は既に存在します (スキップ — 変更したい場合は削除してから再実行)"
 else
-    cp backend/.env.example backend/.env
-    ok "backend/.env.example から backend/.env を作成しました"
+    echo ""
+    echo "  DB / サーバー設定を入力してください。Enter でデフォルト値を使用します。"
+    echo ""
+
+    db_host=$(ask "Control DB ホスト"     "localhost")
+    db_port=$(ask "Control DB ポート"     "5432")
+    db_name=$(ask "Control DB 名"         "dbcontrol")
+    db_user=$(ask "DB ユーザー"           "admin")
+    db_pass=$(ask "DB パスワード"         "admin123")
+    api_port=$(ask "バックエンドポート"   "8080")
+    backup_dir=$(ask "バックアップ保存先" "./data/backups")
+
+    auto_secret="$(random_secret)"
+    jwt_secret=$(ask "JWT シークレット (Enter で自動生成)" "$auto_secret")
+
+    cat > backend/.env <<EOF
+# Database URL for Control DB
+DATABASE_URL=postgres://${db_user}:${db_pass}@${db_host}:${db_port}/${db_name}
+
+# JWT Secret
+JWT_SECRET=${jwt_secret}
+
+# Server
+HOST=0.0.0.0
+PORT=${api_port}
+
+# Logging
+RUST_LOG=info,backend=debug
+
+# Host-side directory backup archives are written to
+BACKUP_DIR=${backup_dir}
+EOF
+
+    ok "backend/.env を生成しました"
+
+    # docker-compose の DB 設定と異なる場合は警告
+    if [ "$db_user" != "admin" ] || [ "$db_pass" != "admin123" ] || [ "$db_name" != "dbcontrol" ]; then
+        warn "docker/docker-compose.yml の DB 設定と異なる値を入力しました。"
+        warn "docker-compose.yml 側も合わせて編集してください。"
+    fi
+fi
+
+# frontend/.env.local の生成
+echo ""
+if [ -f frontend/.env.local ]; then
+    ok "frontend/.env.local は既に存在します (スキップ)"
+else
+    # backend/.env から PORT を読む
+    api_port_from_env=""
+    if [ -f backend/.env ]; then
+        api_port_from_env="$(grep -E '^PORT=' backend/.env | cut -d= -f2 | tr -d '[:space:]')"
+    fi
+    api_port_from_env="${api_port_from_env:-8080}"
+
+    api_url=$(ask "フロント → バックエンド URL" "http://localhost:${api_port_from_env}")
+    echo "NEXT_PUBLIC_API_URL=${api_url}" > frontend/.env.local
+    ok "frontend/.env.local を生成しました"
 fi
 
 # --- 3. Control DB を起動 --------------------------------------------------

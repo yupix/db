@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 開発環境セットアップスクリプト (Windows / PowerShell)
 #
-#   前提チェック → .env 用意 → Control DB 起動 → healthy 待ち →
+#   前提チェック → .env 対話生成 → Control DB 起動 → healthy 待ち →
 #   フロントエンド依存インストール まで一括で行う。
 #
 # 使い方:  ./scripts/setup.ps1
@@ -16,6 +16,15 @@ Set-Location $RepoRoot
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "  OK  $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "  !!  $msg" -ForegroundColor Yellow }
+
+function Read-WithDefault($prompt, $default) {
+    $input = Read-Host "$prompt [$default]"
+    if ([string]::IsNullOrWhiteSpace($input)) { $default } else { $input }
+}
+
+function New-RandomSecret {
+    -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 48 | ForEach-Object { [char]$_ })
+}
 
 # --- 1. 前提コマンドの確認 -------------------------------------------------
 Write-Step "前提コマンドを確認中..."
@@ -36,22 +45,73 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
-# docker デーモンが動いているか
-try {
-    docker info *> $null
-    Write-Ok "Docker デーモンが稼働中"
-} catch {
+if (-not (docker info *>&1 | Select-String "Server")) {
     Write-Host "`nDocker デーモンが起動していません。Docker Desktop を起動してください。" -ForegroundColor Red
     exit 1
 }
+Write-Ok "Docker デーモンが稼働中"
 
-# --- 2. backend/.env の用意 ------------------------------------------------
-Write-Step "backend/.env を用意中..."
+# --- 2. backend/.env の生成 ------------------------------------------------
+Write-Step "backend/.env を設定中..."
 if (Test-Path "backend/.env") {
-    Write-Ok "backend/.env は既に存在します (スキップ)"
+    Write-Ok "backend/.env は既に存在します (スキップ — 変更したい場合は削除してから再実行)"
 } else {
-    Copy-Item "backend/.env.example" "backend/.env"
-    Write-Ok "backend/.env.example から backend/.env を作成しました"
+    Write-Host ""
+    Write-Host "  DB / サーバー設定を入力してください。Enter でデフォルト値を使用します。"
+    Write-Host ""
+
+    $dbHost     = Read-WithDefault "  Control DB ホスト" "localhost"
+    $dbPort     = Read-WithDefault "  Control DB ポート" "5432"
+    $dbName     = Read-WithDefault "  Control DB 名"     "dbcontrol"
+    $dbUser     = Read-WithDefault "  DB ユーザー"       "admin"
+    $dbPass     = Read-WithDefault "  DB パスワード"     "admin123"
+    $apiPort    = Read-WithDefault "  バックエンドポート" "8080"
+    $backupDir  = Read-WithDefault "  バックアップ保存先" "./data/backups"
+
+    $autoSecret = New-RandomSecret
+    $jwtSecret  = Read-WithDefault "  JWT シークレット (Enter で自動生成)" $autoSecret
+
+    @"
+# Database URL for Control DB
+DATABASE_URL=postgres://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}
+
+# JWT Secret
+JWT_SECRET=${jwtSecret}
+
+# Server
+HOST=0.0.0.0
+PORT=${apiPort}
+
+# Logging
+RUST_LOG=info,backend=debug
+
+# Host-side directory backup archives are written to
+BACKUP_DIR=${backupDir}
+"@ | Set-Content "backend/.env" -Encoding UTF8
+
+    Write-Ok "backend/.env を生成しました"
+
+    # docker-compose の DB 設定と異なる場合は警告
+    if ($dbUser -ne "admin" -or $dbPass -ne "admin123" -or $dbName -ne "dbcontrol") {
+        Write-Warn "docker/docker-compose.yml の DB 設定と異なる値を入力しました。"
+        Write-Warn "docker-compose.yml 側も合わせて編集してください。"
+    }
+}
+
+# frontend/.env.local の生成
+Write-Host ""
+if (Test-Path "frontend/.env.local") {
+    Write-Ok "frontend/.env.local は既に存在します (スキップ)"
+} else {
+    $apiPort = if (Test-Path "backend/.env") {
+        (Get-Content "backend/.env" | Select-String "^PORT=").ToString() -replace "^PORT=",""
+    } else { "8080" }
+    $apiPort = $apiPort.Trim()
+    if (-not $apiPort) { $apiPort = "8080" }
+
+    $apiUrl = Read-WithDefault "  フロント → バックエンド URL" "http://localhost:${apiPort}"
+    "NEXT_PUBLIC_API_URL=${apiUrl}" | Set-Content "frontend/.env.local" -Encoding UTF8
+    Write-Ok "frontend/.env.local を生成しました"
 }
 
 # --- 3. Control DB を起動 --------------------------------------------------
