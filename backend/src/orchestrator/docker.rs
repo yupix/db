@@ -3,6 +3,7 @@ use bollard::container::{
     Config as ContainerConfig, CreateContainerOptions, InspectContainerOptions,
     RemoveContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
 };
+use bollard::image::CreateImageOptions;
 use bollard::models::{HealthConfig, HealthStatusEnum, HostConfig, PortBinding};
 use bollard::network::CreateNetworkOptions;
 use futures_util::StreamExt;
@@ -10,6 +11,29 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::error::AppError;
+
+const POSTGRES_IMAGE: &str = "postgres:16-alpine";
+
+/// イメージがローカルになければ pull する。
+async fn ensure_image(docker: &Docker, image: &str) -> Result<(), AppError> {
+    if docker.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    tracing::info!("Pulling image {image}...");
+    let mut stream = docker.create_image(
+        Some(CreateImageOptions {
+            from_image: image,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+    while let Some(item) = stream.next().await {
+        item.map_err(|e| AppError::Internal(format!("Failed to pull {image}: {e}")))?;
+    }
+    tracing::info!("Pulled image {image}");
+    Ok(())
+}
 
 /// A one-shot snapshot of a container's resource usage, derived from the
 /// Docker stats API.
@@ -195,7 +219,7 @@ pub async fn create_postgres_container(
     }
 
     let config = ContainerConfig {
-        image: Some("postgres:16-alpine"),
+        image: Some(POSTGRES_IMAGE),
         env: Some(env),
         host_config: Some(host_config),
         healthcheck: Some(healthcheck),
@@ -518,6 +542,7 @@ async fn spawn_blank_postgres_container(
     docker: &Docker,
     config: &BranchConfig,
 ) -> Result<String, AppError> {
+    ensure_image(docker, POSTGRES_IMAGE).await?;
     let mut port_bindings = HashMap::new();
     port_bindings.insert(
         "5432/tcp".to_string(),
@@ -554,7 +579,7 @@ async fn spawn_blank_postgres_container(
     }
 
     let container_config = ContainerConfig {
-        image: Some("postgres:16-alpine"),
+        image: Some(POSTGRES_IMAGE),
         env: Some(env),
         host_config: Some(host_config),
         healthcheck: Some(healthcheck),
