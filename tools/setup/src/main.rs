@@ -37,15 +37,7 @@ fn main() {
 
     let root = cli
         .root
-        .unwrap_or_else(|| {
-            // tools/setup/target/release/setup → ../../..
-            std::env::current_exe()
-                .unwrap()
-                .ancestors()
-                .nth(4)
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf()
-        });
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let root = root.canonicalize().unwrap_or(root);
 
     match cli.command {
