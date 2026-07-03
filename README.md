@@ -17,30 +17,41 @@ db/
 ├── frontend/          # Next.js Console
 ├── backend/           # Rust API Server
 ├── docker/            # Docker Compose & Dockerfiles
+├── tools/
+│   └── setup/         # セットアップ CLI (Rust)
 └── PLAN.md            # 実装計画
 ```
 
 ## セットアップ
 
 ### 前提条件
+
 - Node.js 22+
 - pnpm 10+
 - Rust 1.85+
 - Docker & Docker Compose
 
-### かんたんセットアップ
-
-前提チェック・`.env` 用意・Control DB 起動・依存インストールを一括で行うスクリプトを用意しています。
-
-```powershell
-# Windows (PowerShell)
-./scripts/setup.ps1
-```
+### セットアップ CLI のビルド
 
 ```bash
-# Linux / macOS
-./scripts/setup.sh
+cd tools/setup
+cargo build --release
 ```
+
+### 実行
+
+```bash
+# 全ステップ一括実行
+#   前提確認 → .env 生成 → Control DB 起動 → pnpm install
+./tools/setup/target/release/setup
+
+# 個別実行
+./tools/setup/target/release/setup check   # 前提コマンド確認のみ
+./tools/setup/target/release/setup env     # .env 生成のみ
+./tools/setup/target/release/setup db      # Control DB 起動のみ
+```
+
+> Windows の場合は `setup.exe` になります。
 
 完了後、別々のターミナルで起動:
 
