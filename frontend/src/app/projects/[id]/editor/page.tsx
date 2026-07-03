@@ -132,8 +132,17 @@ export default function SqlEditorPage() {
     }
   };
 
-  const handleEditorMount: OnMount = (editor) => {
+  const executeQueryRef = useRef(executeQuery);
+  useEffect(() => {
+    executeQueryRef.current = executeQuery;
+  });
+
+  const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+      () => executeQueryRef.current()
+    );
   };
 
   const runExplain = () => {
@@ -197,14 +206,7 @@ export default function SqlEditorPage() {
             <CardTitle className="text-sm">クエリ</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <div
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  executeQuery();
-                }
-              }}
-            >
+            <div>
               <Editor
                 height="200px"
                 defaultLanguage="sql"
