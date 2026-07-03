@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::error::AppError;
 
 const POSTGRES_IMAGE: &str = "postgres:16-alpine";
-const PGBOUNCER_IMAGE: &str = "bitnami/pgbouncer:latest";
+const PGBOUNCER_IMAGE: &str = "edoburu/pgbouncer:latest";
 
 /// イメージがローカルになければ pull する。
 async fn ensure_image(docker: &Docker, image: &str) -> Result<(), AppError> {
@@ -393,17 +393,19 @@ pub async fn create_pgbouncer_container(
         }]),
     );
 
+    // edoburu/pgbouncer の env var 形式
     let env_vars: Vec<String> = vec![
-        "PGBOUNCER_LISTEN_PORT=6432".to_string(),
-        format!("PGBOUNCER_BACKEND_HOST={}", config.backend_host),
-        format!("PGBOUNCER_BACKEND_PORT={}", config.backend_port),
-        format!("PGBOUNCER_BACKEND_DATABASE={}", config.backend_db),
-        format!("PGBOUNCER_BACKEND_USER={}", config.backend_user),
-        format!("PGBOUNCER_BACKEND_PASSWORD={}", config.backend_password),
-        format!("PGBOUNCER_POOL_MODE={}", config.pool_mode),
-        format!("PGBOUNCER_MAX_CLIENT_CONN={}", config.max_client_conn),
-        format!("PGBOUNCER_DEFAULT_POOL_SIZE={}", config.default_pool_size),
-        "PGBOUNCER_AUTH_TYPE=trust".to_string(),
+        "LISTEN_PORT=6432".to_string(),
+        "LISTEN_ADDR=0.0.0.0".to_string(),
+        format!("DB_HOST={}", config.backend_host),
+        format!("DB_PORT={}", config.backend_port),
+        format!("DB_NAME={}", config.backend_db),
+        format!("DB_USER={}", config.backend_user),
+        format!("DB_PASSWORD={}", config.backend_password),
+        format!("POOL_MODE={}", config.pool_mode),
+        format!("MAX_CLIENT_CONN={}", config.max_client_conn),
+        format!("DEFAULT_POOL_SIZE={}", config.default_pool_size),
+        "AUTH_TYPE=trust".to_string(),
     ];
     let env: Vec<&str> = env_vars.iter().map(|s| s.as_str()).collect();
 
@@ -416,23 +418,10 @@ pub async fn create_pgbouncer_container(
         host_config.network_mode = Some(net_id.clone());
     }
 
-    let healthcheck = HealthConfig {
-        test: Some(vec![
-            "CMD-SHELL".to_string(),
-            "pg_isready -h 127.0.0.1 -p 6432".to_string(),
-        ]),
-        interval: Some(5_000_000_000),
-        timeout: Some(5_000_000_000),
-        retries: Some(10),
-        start_period: Some(5_000_000_000),
-        ..Default::default()
-    };
-
     let container_config = ContainerConfig {
         image: Some(PGBOUNCER_IMAGE),
         env: Some(env),
         host_config: Some(host_config),
-        healthcheck: Some(healthcheck),
         ..Default::default()
     };
 
@@ -447,14 +436,14 @@ pub async fn create_pgbouncer_container(
         .await?;
 
     tracing::info!(
-        "Created and started PgBouncer container: {} ({}), waiting for healthy...",
+        "Created and started PgBouncer container: {} ({}), waiting for running...",
         config.container_name,
         result.id
     );
 
-    wait_for_healthy(docker, &result.id).await?;
+    wait_for_running(docker, &result.id).await?;
 
-    tracing::info!("PgBouncer container {} is healthy", config.container_name);
+    tracing::info!("PgBouncer container {} is running", config.container_name);
     Ok(result.id)
 }
 
@@ -513,6 +502,33 @@ pub async fn wait_for_healthy(docker: &Docker, container_id: &str) -> Result<(),
                 tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
             }
         }
+    }
+}
+
+/// healthcheck のない PgBouncer 等のコンテナが running 状態になるまで待つ。
+pub async fn wait_for_running(docker: &Docker, container_id: &str) -> Result<(), AppError> {
+    let start = Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(30) {
+            return Err(AppError::Internal(format!(
+                "Container {} did not start within 30s",
+                container_id
+            )));
+        }
+        let inspect = docker
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await?;
+        if inspect
+            .state
+            .as_ref()
+            .and_then(|s| s.running)
+            .unwrap_or(false)
+        {
+            // ポートバインドが完了するまで少し待つ
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
