@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use crate::error::AppError;
 
 const POSTGRES_IMAGE: &str = "postgres:16-alpine";
+const PGBOUNCER_IMAGE: &str = "bitnami/pgbouncer:1.23";
 
 /// イメージがローカルになければ pull する。
 async fn ensure_image(docker: &Docker, image: &str) -> Result<(), AppError> {
@@ -382,6 +383,7 @@ pub async fn create_pgbouncer_container(
     docker: &Docker,
     config: &PgBouncerConfig,
 ) -> Result<String, AppError> {
+    ensure_image(docker, PGBOUNCER_IMAGE).await?;
     let mut port_bindings = HashMap::new();
     port_bindings.insert(
         "6432/tcp".to_string(),
@@ -427,7 +429,7 @@ pub async fn create_pgbouncer_container(
     };
 
     let container_config = ContainerConfig {
-        image: Some("bitnami/pgbouncer:1.23"),
+        image: Some(PGBOUNCER_IMAGE),
         env: Some(env),
         host_config: Some(host_config),
         healthcheck: Some(healthcheck),
