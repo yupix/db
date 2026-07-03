@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetricsCard } from "@/components/charts/metrics-card";
 import { QueryStatsCard } from "@/components/charts/query-stats-card";
 import { AlertsCard } from "@/components/charts/alerts-card";
@@ -32,6 +33,7 @@ export default function ProjectDetailPage() {
   const { data: project, isLoading } = useProject(id);
   const { start, stop, remove } = useProjectMutations(id);
   const [copied, setCopied] = useState<string | null>(null);
+  const [connModal, setConnModal] = useState<{ label: string; value: string } | null>(null);
   const [poolSettings, setPoolSettings] = useState<PoolSettings | null>(null);
   const [poolLoading, setPoolLoading] = useState(false);
   const [poolForm, setPoolForm] = useState({
@@ -180,10 +182,28 @@ export default function ProjectDetailPage() {
   };
 
   const copyToClipboard = (text: string, key: string) => {
-    navigator.clipboard.writeText(text);
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    } else {
+      fallbackCopy(text);
+    }
     setCopied(key);
     setTimeout(() => setCopied(null), 2000);
   };
+
+  const fallbackCopy = (text: string) => {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand("copy");
+    document.body.removeChild(el);
+  };
+
+  const openConnModal = (label: string, value: string) =>
+    setConnModal({ label, value });
 
   const isPending = start.isPending || stop.isPending || remove.isPending;
 
@@ -193,6 +213,26 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* 接続文字列モーダル */}
+      <Dialog open={!!connModal} onOpenChange={(o) => !o && setConnModal(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{connModal?.label}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <code className="block w-full p-3 bg-muted rounded text-sm break-all select-all">
+              {connModal?.value}
+            </code>
+            <Button
+              className="w-full"
+              onClick={() => connModal && copyToClipboard(connModal.value, "modal")}
+            >
+              {copied === "modal" ? "コピー済み!" : "クリップボードにコピー"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/dashboard" className="text-sm text-muted-foreground hover:underline">
@@ -235,9 +275,9 @@ export default function ProjectDetailPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard(project.connection_string, "direct")}
+                    onClick={() => openConnModal("直接接続（Postgres）", project.connection_string)}
                   >
-                    {copied === "direct" ? "コピー済み!" : "コピー"}
+                    接続文字列
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">Port: {project.port}</p>
@@ -257,10 +297,10 @@ export default function ProjectDetailPage() {
                       variant="outline"
                       size="sm"
                       onClick={() =>
-                        copyToClipboard(project.pooled_connection_string!, "pooled")
+                        openConnModal("プール接続（PgBouncer）", project.pooled_connection_string!)
                       }
                     >
-                      {copied === "pooled" ? "コピー済み!" : "コピー"}
+                      接続文字列
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
@@ -387,10 +427,10 @@ export default function ProjectDetailPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() =>
-                            copyToClipboard(env.connection_string, `env-${env.id}`)
+                            openConnModal(`環境: ${env.name}`, env.connection_string)
                           }
                         >
-                          {copied === `env-${env.id}` ? "コピー済み!" : "コピー"}
+                          接続文字列
                         </Button>
                         <Button
                           variant="ghost"
@@ -465,8 +505,7 @@ export default function ProjectDetailPage() {
                 <BranchTree
                   branches={branches}
                   statusColors={statusColors}
-                  copied={copied}
-                  onCopy={copyToClipboard}
+                  onCopy={openConnModal}
                   onReset={handleResetBranch}
                   onDelete={handleDeleteBranch}
                 />
@@ -556,8 +595,7 @@ export default function ProjectDetailPage() {
 interface BranchTreeProps {
   branches: Branch[];
   statusColors: Record<string, string>;
-  copied: string | null;
-  onCopy: (text: string, key: string) => void;
+  onCopy: (label: string, value: string) => void;
   onReset: (branchId: string) => void;
   onDelete: (branchId: string) => void;
 }
@@ -565,7 +603,6 @@ interface BranchTreeProps {
 function BranchTree({
   branches,
   statusColors,
-  copied,
   onCopy,
   onReset,
   onDelete,
@@ -602,9 +639,9 @@ function BranchTree({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => onCopy(branch.connection_string, `branch-${branch.id}`)}
+              onClick={() => onCopy(`ブランチ: ${branch.name}`, branch.connection_string)}
             >
-              {copied === `branch-${branch.id}` ? "コピー済み!" : "コピー"}
+              接続文字列
             </Button>
             {branch.status === "running" && (
               <Button
