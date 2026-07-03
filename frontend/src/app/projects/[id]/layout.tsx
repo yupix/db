@@ -29,7 +29,7 @@ const navItems = [
   { label: "Overview",   href: "",            Icon: LayoutDashboard },
   { label: "Branches",   href: "/branches",   Icon: GitBranch },
   { label: "SQL Editor", href: "/editor",     Icon: Terminal },
-  { label: "Monitoring", href: "/monitoring", Icon: Activity },
+  { label: "Query Stats", href: "/monitoring", Icon: Activity },
   { label: "Settings",   href: "/settings",   Icon: Settings },
   { label: "Backups",    href: "/backups",    Icon: Archive },
 ];

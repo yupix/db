@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MetricsCard } from "@/components/charts/metrics-card";
+import { AlertsCard } from "@/components/charts/alerts-card";
 import Link from "next/link";
 
 export default function ProjectOverviewPage() {
@@ -173,6 +175,10 @@ export default function ProjectOverviewPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Monitoring */}
+        <MetricsCard projectId={id} running={project.status === "running"} />
+        <AlertsCard projectId={id} />
       </div>
     </div>
   );
