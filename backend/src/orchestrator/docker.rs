@@ -202,7 +202,7 @@ pub async fn create_postgres_container(
     let healthcheck = HealthConfig {
         test: Some(vec![
             "CMD-SHELL".to_string(),
-            "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB".to_string(),
+            "pg_isready".to_string(),
         ]),
         interval: Some(5_000_000_000),
         timeout: Some(5_000_000_000),
@@ -583,7 +583,7 @@ async fn spawn_blank_postgres_container(
     let healthcheck = HealthConfig {
         test: Some(vec![
             "CMD-SHELL".to_string(),
-            "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB".to_string(),
+            "pg_isready".to_string(),
         ]),
         interval: Some(5_000_000_000),
         timeout: Some(5_000_000_000),
