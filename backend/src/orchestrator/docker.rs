@@ -183,6 +183,7 @@ pub async fn create_postgres_container(
     port: u16,
     network_id: Option<&str>,
 ) -> Result<String, AppError> {
+    ensure_image(docker, POSTGRES_IMAGE).await?;
     let mut port_bindings = HashMap::new();
     port_bindings.insert(
         "5432/tcp".to_string(),
