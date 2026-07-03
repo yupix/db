@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::error::AppError;
 
 const POSTGRES_IMAGE: &str = "postgres:16-alpine";
-const PGBOUNCER_IMAGE: &str = "bitnami/pgbouncer:1.23";
+const PGBOUNCER_IMAGE: &str = "bitnami/pgbouncer:latest";
 
 /// イメージがローカルになければ pull する。
 async fn ensure_image(docker: &Docker, image: &str) -> Result<(), AppError> {
