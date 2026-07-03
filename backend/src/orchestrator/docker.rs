@@ -777,7 +777,7 @@ pub async fn reset_branch_container(
             "-d",
             "postgres",
             "-c",
-            &format!("DROP DATABASE IF EXISTS {}", branch_db_name),
+            &format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", branch_db_name),
         ])
         .output()
         .await
@@ -855,25 +855,48 @@ pub async fn reset_branch_container(
         .spawn()
         .map_err(|e| AppError::Internal(format!("Failed to start psql: {}", e)))?;
 
-    {
-        use tokio::io::AsyncWriteExt;
-        if let Some(mut stdin) = psql_child.stdin.take() {
-            stdin
-                .write_all(&pg_dump_output.stdout)
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to write to psql: {}", e)))?;
-        }
-    }
+    // Feed the dump into psql while concurrently draining stdout/stderr.
+    // Writing all of stdin before reading stdout can deadlock: once psql's
+    // output fills the OS pipe buffer (~64KB) it stops consuming stdin, so
+    // our write blocks forever. Drain all three streams in parallel.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stdin = psql_child
+        .stdin
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stdin unavailable".into()))?;
+    let mut stdout = psql_child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stdout unavailable".into()))?;
+    let mut stderr = psql_child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stderr unavailable".into()))?;
 
-    let psql_result = psql_child
-        .wait_with_output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to wait for psql: {}", e)))?;
+    let dump = pg_dump_output.stdout;
+    let write_fut = async move {
+        stdin.write_all(&dump).await?;
+        stdin.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    let (write_res, out_res, err_res, wait_res) = tokio::join!(
+        write_fut,
+        stdout.read_to_end(&mut out_buf),
+        stderr.read_to_end(&mut err_buf),
+        psql_child.wait(),
+    );
 
-    if !psql_result.status.success() {
+    write_res.map_err(|e| AppError::Internal(format!("Failed to write to psql: {}", e)))?;
+    out_res.map_err(|e| AppError::Internal(format!("Failed to read psql stdout: {}", e)))?;
+    err_res.map_err(|e| AppError::Internal(format!("Failed to read psql stderr: {}", e)))?;
+    let status = wait_res.map_err(|e| AppError::Internal(format!("Failed to wait for psql: {}", e)))?;
+
+    if !status.success() {
         return Err(AppError::Internal(format!(
             "psql failed: {}",
-            String::from_utf8_lossy(&psql_result.stderr)
+            String::from_utf8_lossy(&err_buf)
         )));
     }
 

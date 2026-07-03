@@ -40,6 +40,18 @@ async fn reconcile_stale_statuses(state: &Arc<AppState>) {
     {
         tracing::warn!("Failed to reconcile stale backup statuses: {}", e);
     }
+
+    // Branches stuck mid-operation are likewise unrecoverable after a restart.
+    if let Err(e) = sqlx::query(
+        "UPDATE branches
+         SET status = 'error', updated_at = now()
+         WHERE status IN ('creating', 'resetting')",
+    )
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!("Failed to reconcile stale branch statuses: {}", e);
+    }
 }
 
 async fn run_loop(state: Arc<AppState>) {
