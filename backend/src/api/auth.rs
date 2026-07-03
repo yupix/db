@@ -50,11 +50,11 @@ struct UserResponse {
 
 fn build_auth_response(access_token: &str, refresh_token: &str, user: UserResponse) -> Response {
     let access_cookie = format!(
-        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=900",
+        "{}={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=900",
         ACCESS_TOKEN_COOKIE, access_token
     );
     let refresh_cookie = format!(
-        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/refresh; Max-Age=604800",
+        "{}={}; HttpOnly; SameSite=Lax; Path=/api/auth/refresh; Max-Age=604800",
         REFRESH_TOKEN_COOKIE, refresh_token
     );
 
@@ -211,11 +211,11 @@ fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String>
 
 async fn logout() -> Response {
     let access_cookie = format!(
-        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        "{}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
         ACCESS_TOKEN_COOKIE
     );
     let refresh_cookie = format!(
-        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/refresh; Max-Age=0",
+        "{}=; HttpOnly; SameSite=Lax; Path=/api/auth/refresh; Max-Age=0",
         REFRESH_TOKEN_COOKIE
     );
 
