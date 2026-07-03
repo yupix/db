@@ -112,7 +112,7 @@ export default function ProjectOverviewPage() {
         </div>
       </div>
 
-      <div className="p-6 space-y-6 max-w-3xl">
+      <div className="p-6 space-y-6">
         {/* Quick facts */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[

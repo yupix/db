@@ -69,7 +69,7 @@ export default function SettingsPage() {
   return (
     <div>
       <ProjectPageHeader title="Settings" description="プール設定・エンドポイント環境の管理" />
-      <div className="p-6 space-y-6 max-w-3xl">
+      <div className="p-6 space-y-6">
       {/* Pool settings */}
       {poolSettings && (
         <Card>

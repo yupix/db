@@ -152,7 +152,7 @@ export default function BranchesPage() {
 
       <ProjectPageHeader title="Branches" description="データベースのスナップショットコピーを管理します" />
 
-      <div className="p-6 space-y-6 max-w-3xl">
+      <div className="p-6 space-y-6">
       {/* Branch tree */}
       <Card>
         <CardHeader>
