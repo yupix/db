@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ProjectPageHeader } from "@/components/project-page-header";
 
 export default function SettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -66,12 +67,9 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl">
-      <div>
-        <h2 className="text-xl font-bold">Settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">プール設定・エンドポイント環境の管理</p>
-      </div>
-
+    <div>
+      <ProjectPageHeader title="Settings" description="プール設定・エンドポイント環境の管理" />
+      <div className="p-6 space-y-6 max-w-3xl">
       {/* Pool settings */}
       {poolSettings && (
         <Card>
@@ -182,6 +180,7 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

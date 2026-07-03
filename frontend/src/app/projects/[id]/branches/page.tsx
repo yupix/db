@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ProjectPageHeader } from "@/components/project-page-header";
 
 const statusColors: Record<string, string> = {
   running: "bg-green-500",
@@ -132,14 +133,14 @@ export default function BranchesPage() {
   );
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl">
+    <div>
       <Dialog open={!!connModal} onOpenChange={(o) => !o && setConnModal(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{connModal?.label}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <code className="block w-full p-3 bg-muted rounded text-sm break-all select-all">
+            <code className="block w-full p-3 bg-muted rounded-lg text-sm break-all select-all font-mono">
               {connModal?.value}
             </code>
             <Button className="w-full" onClick={() => connModal && copyToClipboard(connModal.value)}>
@@ -149,13 +150,9 @@ export default function BranchesPage() {
         </DialogContent>
       </Dialog>
 
-      <div>
-        <h2 className="text-xl font-bold">Branches</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          データベースのスナップショットコピーを管理します
-        </p>
-      </div>
+      <ProjectPageHeader title="Branches" description="データベースのスナップショットコピーを管理します" />
 
+      <div className="p-6 space-y-6 max-w-3xl">
       {/* Branch tree */}
       <Card>
         <CardHeader>
@@ -210,6 +207,7 @@ export default function BranchesPage() {
           </Button>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

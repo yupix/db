@@ -8,7 +8,7 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import Link from "next/link";
+import { ProjectPageHeader } from "@/components/project-page-header";
 
 interface QueryResult {
   success: boolean;
@@ -172,34 +172,23 @@ export default function SqlEditorPage() {
   if (authLoading || !isAuthenticated) return null;
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link
-              href={`/projects/${id}`}
-              className="text-sm text-muted-foreground hover:underline"
-            >
-              &larr; プロジェクト詳細
-            </Link>
-            <span className="text-muted-foreground">|</span>
-            <h1 className="text-lg font-bold">SQL エディタ</h1>
-            {project && (
-              <Badge className="bg-green-500">{project.status}</Badge>
-            )}
-          </div>
-          <div className="flex gap-2">
+    <div>
+      <ProjectPageHeader
+        title="SQL エディタ"
+        description={project ? `${project.name} · ${project.status}` : undefined}
+        actions={
+          <>
             <Button variant="outline" size="sm" onClick={runExplain} disabled={isExecuting}>
               EXPLAIN ANALYZE
             </Button>
             <Button size="sm" onClick={() => executeQuery()} disabled={isExecuting || !query.trim()}>
               {isExecuting ? "実行中..." : "実行 (Ctrl+Enter)"}
             </Button>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
-      <main className="container mx-auto px-4 py-4 space-y-4">
+      <main className="p-6 space-y-4">
         {/* Editor */}
         <Card>
           <CardHeader className="pb-2">

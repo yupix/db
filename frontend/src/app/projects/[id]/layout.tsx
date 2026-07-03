@@ -18,11 +18,11 @@ import {
 } from "lucide-react";
 
 const statusDot: Record<string, string> = {
-  running: "bg-emerald-500",
-  stopped: "bg-amber-500",
-  creating: "bg-blue-500 animate-pulse",
-  resetting: "bg-purple-500 animate-pulse",
-  error: "bg-red-500",
+  running: "bg-emerald-400",
+  stopped: "bg-amber-400",
+  creating: "bg-blue-400 animate-pulse",
+  resetting: "bg-purple-400 animate-pulse",
+  error: "bg-red-400",
 };
 
 const navItems = [
@@ -53,64 +53,72 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
 
   return (
     <div className="flex min-h-screen bg-background">
-      {/* Sidebar */}
-      <aside className="w-60 shrink-0 border-r bg-sidebar flex flex-col fixed inset-y-0 left-0">
+      {/* Sidebar (dark) */}
+      <aside className="w-60 shrink-0 flex flex-col fixed inset-y-0 left-0 bg-neutral-950 text-neutral-300">
         {/* Brand */}
-        <div className="h-14 px-4 flex items-center gap-2 border-b">
+        <div className="h-14 px-4 flex items-center gap-2.5 border-b border-white/10">
           <div className="size-7 rounded-md bg-primary flex items-center justify-center">
             <Database className="size-4 text-primary-foreground" />
           </div>
-          <span className="font-semibold text-sm">DB Console</span>
+          <span className="font-semibold text-sm text-white tracking-tight">DB Console</span>
         </div>
 
         {/* Project header */}
-        <div className="p-4 border-b">
+        <div className="p-4 border-b border-white/10">
           <Link
             href="/dashboard"
-            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mb-2"
+            className="text-xs text-neutral-500 hover:text-neutral-200 transition-colors flex items-center gap-1 mb-3"
           >
             <ChevronLeft className="size-3" />
             ダッシュボード
           </Link>
           <div className="flex items-center gap-2">
-            <span className={`size-2 rounded-full ${statusDot[project?.status ?? ""] ?? "bg-gray-400"}`} />
-            <p className="text-sm font-semibold truncate">{project?.name ?? "…"}</p>
+            <span className={`size-2 rounded-full ${statusDot[project?.status ?? ""] ?? "bg-neutral-500"}`} />
+            <p className="text-sm font-semibold text-white truncate">{project?.name ?? "…"}</p>
           </div>
-          <p className="text-xs text-muted-foreground mt-0.5 capitalize">{project?.status}</p>
+          <p className="text-xs text-neutral-500 mt-1 capitalize font-mono">{project?.status ?? "—"}</p>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ label, href, Icon }) => {
-            const to = `${base}${href}`;
-            const active = href === "" ? pathname === base : pathname.startsWith(to);
-            return (
-              <Link
-                key={href}
-                href={to}
-                className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                  active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/50"
-                }`}
-              >
-                <Icon className="size-4" />
-                {label}
-              </Link>
-            );
-          })}
+        <nav className="flex-1 p-3 overflow-y-auto">
+          <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+            Manage
+          </p>
+          <div className="space-y-0.5">
+            {navItems.map(({ label, href, Icon }) => {
+              const to = `${base}${href}`;
+              const active = href === "" ? pathname === base : pathname.startsWith(to);
+              return (
+                <Link
+                  key={href}
+                  href={to}
+                  className={`relative flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                    active
+                      ? "bg-primary/15 text-white font-medium"
+                      : "text-neutral-400 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  {active && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-primary" />
+                  )}
+                  <Icon className={`size-4 ${active ? "text-primary" : ""}`} />
+                  {label}
+                </Link>
+              );
+            })}
+          </div>
         </nav>
 
         {/* User */}
-        <div className="p-3 border-t">
-          <div className="flex items-center gap-2 px-1">
-            <div className="size-7 rounded-full bg-accent flex items-center justify-center text-xs font-semibold text-accent-foreground shrink-0">
+        <div className="p-3 border-t border-white/10">
+          <div className="flex items-center gap-2.5 px-1">
+            <div className="size-7 rounded-full bg-gradient-to-br from-primary to-emerald-700 flex items-center justify-center text-xs font-semibold text-white shrink-0">
               {user?.email?.[0]?.toUpperCase() ?? "?"}
             </div>
-            <span className="text-xs text-muted-foreground truncate flex-1">{user?.email}</span>
+            <span className="text-xs text-neutral-400 truncate flex-1">{user?.email}</span>
             <button
               onClick={logout}
-              className="text-muted-foreground hover:text-foreground p-1 rounded"
+              className="text-neutral-500 hover:text-white transition-colors p-1 rounded"
               title="ログアウト"
             >
               <LogOut className="size-4" />
