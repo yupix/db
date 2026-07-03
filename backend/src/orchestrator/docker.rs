@@ -467,6 +467,26 @@ pub async fn wait_for_healthy(docker: &Docker, container_id: &str) -> Result<(),
 
     loop {
         if start.elapsed() > HEALTH_CHECK_TIMEOUT {
+            // タイムアウト時に healthcheck ログを出力して原因を診断しやすくする
+            if let Ok(inspect) = docker
+                .inspect_container(container_id, None::<InspectContainerOptions>)
+                .await
+            {
+                if let Some(logs) = inspect
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.health.as_ref())
+                    .and_then(|h| h.log.as_ref())
+                {
+                    for entry in logs.iter().rev().take(3) {
+                        tracing::error!(
+                            "  healthcheck: exit={:?} output={:?}",
+                            entry.exit_code,
+                            entry.output
+                        );
+                    }
+                }
+            }
             return Err(AppError::Internal(format!(
                 "Container {} did not become healthy within {:?}",
                 container_id, HEALTH_CHECK_TIMEOUT
