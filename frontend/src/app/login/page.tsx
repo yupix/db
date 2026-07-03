@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Database } from "lucide-react";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -28,11 +29,16 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <Card className="w-[400px]">
-        <CardHeader>
-          <CardTitle>ログイン</CardTitle>
-          <CardDescription>DB管理サービスにログイン</CardDescription>
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-background to-accent/30 p-4">
+      <Card className="w-[400px] shadow-lg">
+        <CardHeader className="space-y-3">
+          <div className="size-11 rounded-xl bg-primary flex items-center justify-center">
+            <Database className="size-6 text-primary-foreground" />
+          </div>
+          <div>
+            <CardTitle className="text-xl">おかえりなさい</CardTitle>
+            <CardDescription>DB Console にログイン</CardDescription>
+          </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
