@@ -189,6 +189,7 @@ fn gen_backend_env(root: &Path) {
     let db_pass: String = prompt_password("DB パスワード", "admin123");
     let api_port: String = prompt("バックエンドポート", "8080");
     let backup_dir: String = prompt("バックアップ保存先", "./data/backups");
+    let public_host: String = prompt("接続文字列に埋め込むホスト名 (リモートなら IP/ドメイン)", "localhost");
 
     let auto_secret = random_secret();
     let jwt_secret: String = prompt("JWT シークレット (Enter で自動生成)", &auto_secret);
@@ -208,7 +209,10 @@ fn gen_backend_env(root: &Path) {
          RUST_LOG=info,backend=debug\n\
          \n\
          # Host-side directory backup archives are written to\n\
-         BACKUP_DIR={backup_dir}\n"
+         BACKUP_DIR={backup_dir}\n\
+         \n\
+         # Hostname embedded in connection strings returned to clients\n\
+         PUBLIC_HOST={public_host}\n"
     );
 
     fs::write(&env_path, content).unwrap_or_else(|e| {

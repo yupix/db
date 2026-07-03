@@ -61,7 +61,7 @@ pub async fn list_branches(
     Ok(Json(
         branches
             .iter()
-            .map(|b| BranchResponse::from(b, &project, "localhost"))
+            .map(|b| BranchResponse::from(b, &project, &state.config.public_host))
             .collect(),
     ))
 }
@@ -204,7 +204,7 @@ pub async fn create_branch(
             .await;
     });
 
-    Ok(Json(BranchResponse::from(&branch, &project, "localhost")))
+    Ok(Json(BranchResponse::from(&branch, &project, &state.config.public_host)))
 }
 
 pub async fn get_branch(
@@ -222,7 +222,7 @@ pub async fn get_branch(
             .await?
             .ok_or(AppError::NotFound)?;
 
-    Ok(Json(BranchResponse::from(&branch, &project, "localhost")))
+    Ok(Json(BranchResponse::from(&branch, &project, &state.config.public_host)))
 }
 
 pub async fn delete_branch(
@@ -296,7 +296,7 @@ pub async fn rename_branch(
         .fetch_one(&state.db)
         .await?;
 
-    Ok(Json(BranchResponse::from(&updated, &project, "localhost")))
+    Ok(Json(BranchResponse::from(&updated, &project, &state.config.public_host)))
 }
 
 pub async fn reset_branch(
@@ -387,7 +387,7 @@ pub async fn reset_branch(
     Ok(Json(BranchResponse::from(
         &updated_branch,
         &project,
-        "localhost",
+        &state.config.public_host,
     )))
 }
 
@@ -502,7 +502,7 @@ pub async fn restore_as_branch(
         }
     });
 
-    Ok(Json(BranchResponse::from(&branch, &project, "localhost")))
+    Ok(Json(BranchResponse::from(&branch, &project, &state.config.public_host)))
 }
 
 async fn find_available_branch_port(state: &AppState) -> Result<i32, AppError> {

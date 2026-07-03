@@ -8,6 +8,8 @@ pub struct Config {
     /// project/container deletion, so it must NOT be inside a project
     /// container's own filesystem.
     pub backup_dir: String,
+    /// 接続文字列に埋め込むホスト名。外部公開する場合は IP やドメインを設定。
+    pub public_host: String,
 }
 
 impl Config {
@@ -24,6 +26,7 @@ impl Config {
                 .unwrap_or_else(|_| "8080".into())
                 .parse()?,
             backup_dir: std::env::var("BACKUP_DIR").unwrap_or_else(|_| "./data/backups".into()),
+            public_host: std::env::var("PUBLIC_HOST").unwrap_or_else(|_| "localhost".into()),
         })
     }
 }

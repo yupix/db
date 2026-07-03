@@ -158,7 +158,7 @@ async fn list_projects(
     Ok(Json(
         projects
             .iter()
-            .map(|p| ProjectResponse::from(p, "localhost"))
+            .map(|p| ProjectResponse::from(p, &state.config.public_host))
             .collect(),
     ))
 }
@@ -413,7 +413,7 @@ async fn create_project(
         }
     });
 
-    Ok(Json(ProjectResponse::from(&project, "localhost")))
+    Ok(Json(ProjectResponse::from(&project, &state.config.public_host)))
 }
 
 async fn get_project(
@@ -423,7 +423,7 @@ async fn get_project(
 ) -> Result<Json<ProjectResponse>, AppError> {
     let project = fetch_project_for(&state.db, id, user_id, Access::Read).await?;
 
-    Ok(Json(ProjectResponse::from(&project, "localhost")))
+    Ok(Json(ProjectResponse::from(&project, &state.config.public_host)))
 }
 
 async fn delete_project(
@@ -475,7 +475,7 @@ async fn start_project(
         .fetch_one(&state.db)
         .await?;
 
-    Ok(Json(ProjectResponse::from(&updated, "localhost")))
+    Ok(Json(ProjectResponse::from(&updated, &state.config.public_host)))
 }
 
 async fn stop_project(
@@ -502,7 +502,7 @@ async fn stop_project(
         .fetch_one(&state.db)
         .await?;
 
-    Ok(Json(ProjectResponse::from(&updated, "localhost")))
+    Ok(Json(ProjectResponse::from(&updated, &state.config.public_host)))
 }
 
 #[derive(Deserialize)]
@@ -531,7 +531,7 @@ async fn update_project(
         .fetch_one(&state.db)
         .await?;
 
-    Ok(Json(ProjectResponse::from(&updated, "localhost")))
+    Ok(Json(ProjectResponse::from(&updated, &state.config.public_host)))
 }
 
 // ---------------------------------------------------------------------------
@@ -771,15 +771,15 @@ async fn create_environment(
             )),
             |p| {
                 Ok(format!(
-                    "postgres://{}:{}@localhost:{}/{}",
-                    project.db_user, project.db_password, p, project.db_name
+                    "postgres://{}:{}@{}:{}/{}",
+                    project.db_user, project.db_password, state.config.public_host, p, project.db_name
                 ))
             },
         )?
     } else {
         format!(
-            "postgres://{}:{}@localhost:{}/{}",
-            project.db_user, project.db_password, project.port, project.db_name
+            "postgres://{}:{}@{}:{}/{}",
+            project.db_user, project.db_password, state.config.public_host, project.port, project.db_name
         )
     };
 
