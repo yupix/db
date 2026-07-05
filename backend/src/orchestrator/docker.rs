@@ -728,23 +728,55 @@ pub async fn create_branch_container(
         .spawn()
         .map_err(|e| AppError::Internal(format!("Failed to start psql: {}", e)))?;
 
-    {
-        use tokio::io::AsyncWriteExt;
-        if let Some(mut stdin) = psql_child.stdin.take() {
-            stdin
-                .write_all(&pg_dump_output.stdout)
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to write to psql: {}", e)))?;
-        }
+    // Drain stdin/stdout/stderr concurrently to avoid the pipe deadlock that
+    // occurs when psql's output fills the OS buffer before we finish writing.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stdin = psql_child
+        .stdin
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stdin unavailable".into()))?;
+    let mut stdout = psql_child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stdout unavailable".into()))?;
+    let mut stderr = psql_child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Internal("psql stderr unavailable".into()))?;
+
+    let dump = pg_dump_output.stdout;
+    let write_fut = async move {
+        stdin.write_all(&dump).await?;
+        stdin.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+    let mut err_buf = Vec::new();
+    let mut out_buf = Vec::new();
+    let (write_res, out_res, err_res, wait_res) = tokio::join!(
+        write_fut,
+        stdout.read_to_end(&mut out_buf),
+        stderr.read_to_end(&mut err_buf),
+        psql_child.wait(),
+    );
+
+    let fail = write_res.err().map(|e| format!("Failed to write to psql: {}", e))
+        .or_else(|| out_res.err().map(|e| format!("Failed to read psql stdout: {}", e)))
+        .or_else(|| err_res.err().map(|e| format!("Failed to read psql stderr: {}", e)));
+    if let Some(msg) = fail {
+        let _ = remove_container(docker, &branch_container_id).await;
+        return Err(AppError::Internal(msg));
     }
 
-    let psql_result = psql_child
-        .wait_with_output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to wait for psql: {}", e)))?;
+    let status = match wait_res {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = remove_container(docker, &branch_container_id).await;
+            return Err(AppError::Internal(format!("Failed to wait for psql: {}", e)));
+        }
+    };
 
-    if !psql_result.status.success() {
-        let stderr = String::from_utf8_lossy(&psql_result.stderr);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&err_buf);
         let _ = remove_container(docker, &branch_container_id).await;
         return Err(AppError::Internal(format!("psql failed: {}", stderr)));
     }
